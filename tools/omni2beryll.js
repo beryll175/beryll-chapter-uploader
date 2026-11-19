@@ -1,7 +1,7 @@
 (async()=>{
 "use strict";
 
-/* OMNI → BERYLL EXPORTER V4.3 */
+/* OMNI → BERYLL EXPORTER V4.4 */
 
 const API="https://api.readomni.com/translation/";
 const DB="omni2beryll-v2";
@@ -48,7 +48,7 @@ box-shadow:0 5px 30px #0009;
 panel.innerHTML=`
 <div style="font-size:21px;font-weight:bold;color:#ff9800">
 Omni → Beryll Exporter
-<span style="font-size:11px;color:#aaa">V4.3</span>
+<span style="font-size:11px;color:#aaa">V4.4</span>
 </div>
 
 <div id="o2b-novel" style="
@@ -152,6 +152,16 @@ font-weight:bold">
 <option value="both" selected>Both in separate EPUBs</option>
 <option value="combined">All chapters in one EPUB</option>
 </select>
+
+<label style="display:block;margin-top:12px">Custom export filename</label>
+
+<input id="o2b-export-name" type="text"
+placeholder="Enter filename"
+style="width:100%;padding:12px;margin-top:7px;box-sizing:border-box">
+
+<div style="font-size:11px;color:#aaa;margin-top:5px">
+The ZIP and EPUB filenames will use this name.
+</div>
 
 </div>
 </details>
@@ -400,6 +410,8 @@ async function initialise(){
   document.title||
   "Omni Export"
  ).replace(/\s*[-|]\s*(OmniTranslate|ReadOmni).*$/i,"").trim();
+
+ $("o2b-export-name").value=filename(novelTitle);
 
  $("o2b-novel").innerHTML=
   "<b>Novel:</b> "+esc(novelTitle)+
@@ -1318,7 +1330,13 @@ $("o2b-build").onclick=async()=>{
 
   const zip=new JSZip();
 
-  const name=filename(novelTitle);
+  const enteredName=$("o2b-export-name").value.trim();
+
+  if(!enteredName){
+   throw Error("Enter a filename before building the EPUB.");
+  }
+
+  const name=filename(enteredName);
 
   if(downloadMode==="finished"){
 
@@ -1327,7 +1345,7 @@ $("o2b-build").onclick=async()=>{
    }
 
    zip.file(
-    name+" - Finished.epub",
+    name+"-finished.epub",
     await makeEPUB(finished,"Finished")
    );
   }
@@ -1339,7 +1357,7 @@ $("o2b-build").onclick=async()=>{
    }
 
    zip.file(
-    name+" - Unfinished.epub",
+    name+"-unfinished.epub",
     await makeEPUB(unfinished,"Unfinished")
    );
   }
@@ -1349,7 +1367,7 @@ $("o2b-build").onclick=async()=>{
    if(finished.length){
 
     zip.file(
-     "Finished/"+name+" - Finished.epub",
+     name+"-finished.epub",
      await makeEPUB(finished,"Finished")
     );
 
@@ -1358,7 +1376,7 @@ $("o2b-build").onclick=async()=>{
    if(unfinished.length){
 
     zip.file(
-     "Unfinished/"+name+" - Unfinished.epub",
+     name+"-unfinished.epub",
      await makeEPUB(unfinished,"Unfinished")
     );
 
@@ -1368,35 +1386,11 @@ $("o2b-build").onclick=async()=>{
   if(downloadMode==="combined"){
 
    zip.file(
-    name+" - Complete.epub",
+    name+".epub",
     await makeEPUB(chosen,"Complete")
    );
 
   }
-
-  zip.file(
-   "Manifest/chapters.json",
-   JSON.stringify({
-
-    novel:novelTitle,
-    threadId,
-
-    exportedRecords:chosen.length,
-    finished:finished.length,
-    unfinished:unfinished.length,
-
-    chapters:chosen.map(r=>({
-
-     id:r.id,
-     recordNumber:r.recordNumber,
-     title:r.title,
-     status:r.status,
-     translatedCharacters:r.text.length
-
-    }))
-
-   },null,2)
-  );
 
   status("Preparing ZIP download...");
 
@@ -1409,7 +1403,7 @@ $("o2b-build").onclick=async()=>{
   const a=document.createElement("a");
 
   a.href=url;
-  a.download=name+" - Omni Export.zip";
+  a.download=name+".zip";
 
   document.body.appendChild(a);
 
