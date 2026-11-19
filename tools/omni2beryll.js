@@ -1,7 +1,7 @@
 (async()=>{
 "use strict";
 
-/* OMNI → BERYLL EXPORTER V3 */
+/* OMNI → BERYLL EXPORTER V4 */
 
 const API="https://api.readomni.com/translation/";
 const DB="omni2beryll-v2";
@@ -15,31 +15,44 @@ let db,threadId,firstId,novelTitle="Omni Export";
 let records=[],selected=new Set();
 let scanning=false,running=false,paused=false;
 let filter="all",mode="all",batchSize=50;
-let rangeStart=1,rangeEnd=999999;
 let downloadMode="both";
 
 const $=id=>document.getElementById(id);
 
+/* PANEL */
+
 const panel=document.createElement("div");
 panel.id="o2b-panel";
+
 panel.style.cssText=`
-position:fixed;z-index:2147483647;
-top:6px;left:6px;right:6px;bottom:6px;
-overflow:auto;background:#171717;color:white;
-padding:15px;border:2px solid #ff9800;
-border-radius:14px;font:14px Arial,sans-serif;
+position:fixed;
+z-index:2147483647;
+top:6px;
+left:6px;
+right:6px;
+bottom:6px;
+overflow:auto;
+background:#171717;
+color:white;
+padding:15px;
+border:2px solid #ff9800;
+border-radius:14px;
+font:14px Arial,sans-serif;
 box-shadow:0 5px 30px #0009;
 `;
 
 panel.innerHTML=`
 <div style="font-size:21px;font-weight:bold;color:#ff9800">
 Omni → Beryll Exporter
-<span style="font-size:11px;color:#aaa">V3.0</span>
+<span style="font-size:11px;color:#aaa">V4.0</span>
 </div>
 
 <div id="o2b-novel" style="
-background:#292929;padding:12px;border-radius:9px;
-margin:12px 0;line-height:1.6">
+background:#292929;
+padding:12px;
+border-radius:9px;
+margin:12px 0;
+line-height:1.6">
 Identifying novel...
 </div>
 
@@ -51,6 +64,7 @@ Identifying novel...
 <div style="padding:10px;background:#292929;border-radius:9px">
 
 <label>Chapter status</label>
+
 <select id="o2b-filter" style="width:100%;padding:11px;margin:7px 0">
 <option value="all">All chapters</option>
 <option value="finished">Finished only</option>
@@ -58,6 +72,7 @@ Identifying novel...
 </select>
 
 <label>Chapter selection</label>
+
 <select id="o2b-mode" style="width:100%;padding:11px;margin:7px 0">
 <option value="all">Entire novel</option>
 <option value="range">Specific chapter range</option>
@@ -65,28 +80,39 @@ Identifying novel...
 </select>
 
 <div id="o2b-range" style="display:none">
+
 <label>Starting chapter position</label>
+
 <input id="o2b-from" type="number" min="1" value="1"
 style="width:100%;padding:10px;margin:5px 0">
 
 <label>Ending chapter position</label>
+
 <input id="o2b-to" type="number" min="1" value="100"
 style="width:100%;padding:10px;margin:5px 0">
+
 </div>
 
 <div id="o2b-individual" style="display:none">
+
 <div style="margin:10px 0">
 <button id="o2b-selectall">Select all visible</button>
 <button id="o2b-clear">Clear selection</button>
 </div>
+
 <div id="o2b-list" style="
-max-height:220px;overflow:auto;
-background:#171717;padding:8px;border-radius:8px">
+max-height:220px;
+overflow:auto;
+background:#171717;
+padding:8px;
+border-radius:8px">
 Scan the chapter list first.
 </div>
+
 </div>
 
 <label>Batch size</label>
+
 <select id="o2b-batch" style="width:100%;padding:11px;margin:7px 0">
 <option value="25">25 chapters</option>
 <option value="50" selected>50 chapters</option>
@@ -95,11 +121,17 @@ Scan the chapter list first.
 </select>
 
 <button id="o2b-scan" style="
-width:100%;padding:13px;margin-top:12px;
-background:#7952b3;color:white;border:0;
-border-radius:8px;font-weight:bold">
+width:100%;
+padding:13px;
+margin-top:12px;
+background:#7952b3;
+color:white;
+border:0;
+border-radius:8px;
+font-weight:bold">
 🔎 SCAN CHAPTER LIST
 </button>
+
 </div>
 </details>
 
@@ -107,69 +139,99 @@ border-radius:8px;font-weight:bold">
 <summary style="font-size:16px;font-weight:bold;padding:8px">
 📚 Download settings
 </summary>
+
 <div style="padding:10px;background:#292929;border-radius:9px">
+
 <select id="o2b-download" style="width:100%;padding:12px">
 <option value="finished">Finished EPUB only</option>
 <option value="unfinished">Unfinished EPUB only</option>
 <option value="both" selected>Both in separate EPUBs</option>
 <option value="combined">All chapters in one EPUB</option>
 </select>
+
 </div>
 </details>
 
 <div id="o2b-count" style="
-padding:12px;background:#292929;border-radius:9px;
-margin:12px 0;line-height:1.6">
+padding:12px;
+background:#292929;
+border-radius:9px;
+margin:12px 0;
+line-height:1.6">
 No chapters scanned yet.
 </div>
 
 <div id="o2b-status" style="
-padding:13px;background:#292929;
-border-radius:9px;white-space:pre-line;
-line-height:1.5;margin:12px 0">
+padding:13px;
+background:#292929;
+border-radius:9px;
+white-space:pre-line;
+line-height:1.5;
+margin:12px 0">
 Ready.
 </div>
 
-<div style="height:12px;background:#444;
-border-radius:20px;overflow:hidden">
+<div style="height:12px;background:#444;border-radius:20px;overflow:hidden">
 <div id="o2b-bar" style="
-height:100%;width:0%;background:#4caf50;
+height:100%;
+width:0%;
+background:#4caf50;
 transition:width .2s"></div>
 </div>
 
 <button id="o2b-start" style="
-width:100%;padding:17px;margin-top:14px;
-background:#168b45;color:white;border:0;
-border-radius:10px;font-size:17px;font-weight:bold">
+width:100%;
+padding:17px;
+margin-top:14px;
+background:#168b45;
+color:white;
+border:0;
+border-radius:10px;
+font-size:17px;
+font-weight:bold">
 ▶ START / RESUME SCRAPING
 </button>
 
 <button id="o2b-stop" style="
-width:100%;padding:17px;margin-top:9px;
-background:#f0a02b;color:#171717;border:0;
-border-radius:10px;font-size:17px;font-weight:bold">
+width:100%;
+padding:17px;
+margin-top:9px;
+background:#f0a02b;
+color:#171717;
+border:0;
+border-radius:10px;
+font-size:17px;
+font-weight:bold">
 ⏸ PAUSE SCRAPING
 </button>
 
 <button id="o2b-build" style="
-width:100%;padding:17px;margin-top:9px;
-background:#1976d2;color:white;border:0;
-border-radius:10px;font-size:17px;font-weight:bold">
+width:100%;
+padding:17px;
+margin-top:9px;
+background:#1976d2;
+color:white;
+border:0;
+border-radius:10px;
+font-size:17px;
+font-weight:bold">
 📦 BUILD & DOWNLOAD EPUBS
 </button>
 
 <button id="o2b-close" style="
-width:100%;padding:14px;margin-top:9px;
-background:#555;color:white;border:0;
-border-radius:10px;font-size:15px">
+width:100%;
+padding:14px;
+margin-top:9px;
+background:#555;
+color:white;
+border:0;
+border-radius:10px;
+font-size:15px">
 ✕ CLOSE PANEL
 </button>
 
-<div style="font-size:12px;color:#bbb;
-margin-top:14px;line-height:1.6">
-Keep this tab open during scraping. Your progress
-is saved in Chrome on this device. Android may
-suspend background tabs, so return periodically.
+<div style="font-size:12px;color:#bbb;margin-top:14px;line-height:1.6">
+Keep this tab open during scraping. Your progress is saved in Chrome on this device. Android may suspend background tabs, so return periodically.
 </div>
 `;
 
@@ -177,60 +239,100 @@ document.body.appendChild(panel);
 
 const status=t=>$("o2b-status").textContent=t;
 
+/* TEXT FORMATTING */
+
 function esc(s){
  return String(s).replace(/[&<>"']/g,c=>({
- "&":"&amp;","<":"&lt;",">":"&gt;",
- '"':"&quot;","'":"&#39;"
+  "&":"&amp;",
+  "<":"&lt;",
+  ">":"&gt;",
+  '"':"&quot;",
+  "'":"&#39;"
  }[c]));
 }
 
- function formatMarkdown(s){
+function formatMarkdown(s){
 
  let text=esc(s);
 
- // Bold
+ const code=[];
+
+ text=text.replace(/`([^`]+)`/g,(_,value)=>{
+  const token="@@CODE"+code.length+"@@";
+  code.push("<code>"+value+"</code>");
+  return token;
+ });
+
  text=text.replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>");
 
- // Italics
- text=text.replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g,"<em>$1</em>");
- text=text.replace(/(?<!_)_([^_\n]+?)_(?!_)/g,"<em>$1</em>");
+ text=text.replace(
+  /(?<!\*)\*([^*\n]+?)\*(?!\*)/g,
+  "<em>$1</em>"
+ );
 
- // Strikethrough
+ text=text.replace(
+  /(?<!_)_([^_\n]+?)_(?!_)/g,
+  "<em>$1</em>"
+ );
+
  text=text.replace(/~~(.+?)~~/g,"<del>$1</del>");
 
- // Inline code
- text=text.replace(/`([^`]+)`/g,"<code>$1</code>");
+ text=text.replace(
+  /@@CODE(\d+)@@/g,
+  (_,i)=>code[Number(i)]
+ );
 
  return text.replace(/\n/g,"<br/>");
- }
+}
 
 function filename(s){
- return String(s).replace(/[\\/:*?"<>|]/g,"")
- .replace(/\s+/g," ").trim().slice(0,100)||"Omni Export";
+ return String(s)
+  .replace(/[\\/:*?"<>|]/g,"")
+  .replace(/\s+/g," ")
+  .trim()
+  .slice(0,100)||"Omni Export";
 }
 
 /* DATABASE */
 
 function openDB(){
+
  return new Promise((resolve,reject)=>{
+
   const q=indexedDB.open(DB,1);
+
   q.onupgradeneeded=()=>{
-   if(!q.result.objectStoreNames.contains("records"))
+   if(!q.result.objectStoreNames.contains("records")){
     q.result.createObjectStore("records",{keyPath:"id"});
+   }
   };
-  q.onsuccess=()=>{db=q.result;resolve()};
+
+  q.onsuccess=()=>{
+   db=q.result;
+   resolve();
+  };
+
   q.onerror=()=>reject(q.error);
+
  });
 }
 
 function saveMany(list){
+
  return new Promise((resolve,reject)=>{
+
   const tx=db.transaction("records","readwrite");
   const store=tx.objectStore("records");
+
   list.forEach(r=>store.put(r));
+
   tx.oncomplete=resolve;
   tx.onerror=()=>reject(tx.error);
-  tx.onabort=()=>reject(tx.error||Error("Database batch save failed."));
+
+  tx.onabort=()=>{
+   reject(tx.error||Error("Database batch save failed."));
+  };
+
  });
 }
 
@@ -239,17 +341,25 @@ function save(r){
 }
 
 function getAll(){
+
  return new Promise((resolve,reject)=>{
-  const q=db.transaction("records").objectStore("records").getAll();
+
+  const q=db.transaction("records")
+   .objectStore("records")
+   .getAll();
+
   q.onsuccess=()=>resolve(q.result);
   q.onerror=()=>reject(q.error);
+
  });
 }
 
 async function getRecords(){
+
  return (await getAll())
- .filter(r=>r.threadId===threadId)
- .sort((a,b)=>a.recordNumber-b.recordNumber);
+  .filter(r=>r.threadId===threadId)
+  .sort((a,b)=>a.recordNumber-b.recordNumber);
+
 }
 
 /* IDENTIFY NOVEL */
@@ -260,8 +370,9 @@ async function initialise(){
   /\/translation\/([a-f0-9-]+)/i
  );
 
- if(!match)
+ if(!match){
   throw Error("Open an individual OmniTranslate chapter page first.");
+ }
 
  firstId=match[1];
 
@@ -269,13 +380,17 @@ async function initialise(){
   credentials:"include"
  });
 
- if(!response.ok)throw Error("Could not access chapter.");
+ if(!response.ok){
+  throw Error("Could not access chapter.");
+ }
 
  const data=await response.json();
 
  threadId=data.threadId;
 
- if(!threadId)throw Error("Could not identify novel.");
+ if(!threadId){
+  throw Error("Could not identify novel.");
+ }
 
  novelTitle=(
   document.querySelector('meta[property="og:title"]')?.content||
@@ -284,35 +399,45 @@ async function initialise(){
  ).replace(/\s*[-|]\s*(OmniTranslate|ReadOmni).*$/i,"").trim();
 
  $("o2b-novel").innerHTML=
- "<b>Novel:</b> "+esc(novelTitle)+
- "<br><b>Thread:</b> "+threadId+
- "<br><b>Starting record:</b> "+firstId;
+  "<b>Novel:</b> "+esc(novelTitle)+
+  "<br><b>Thread:</b> "+threadId+
+  "<br><b>Starting record:</b> "+firstId;
 
  await refreshCount();
 }
 
 async function refreshCount(){
+
  records=await getRecords();
 
  const scraped=records.filter(r=>r.text).length;
 
  $("o2b-count").innerHTML=
- "<b>Records scanned:</b> "+records.length+
- "<br><b>Chapters with saved text:</b> "+scraped+
- "<br><b>Finished:</b> "+records.filter(r=>r.status==="finished").length+
- "<br><b>Unfinished:</b> "+records.filter(r=>r.status!=="finished").length;
+  "<b>Records scanned:</b> "+records.length+
+  "<br><b>Chapters with saved text:</b> "+scraped+
+  "<br><b>Finished:</b> "+
+  records.filter(r=>r.status==="finished").length+
+  "<br><b>Unfinished:</b> "+
+  records.filter(r=>r.status!=="finished").length;
 }
 
 /* SETTINGS */
 
 $("o2b-mode").onchange=()=>{
+
  mode=$("o2b-mode").value;
- $("o2b-range").style.display=mode==="range"?"block":"none";
- $("o2b-individual").style.display=mode==="individual"?"block":"none";
+
+ $("o2b-range").style.display=
+  mode==="range"?"block":"none";
+
+ $("o2b-individual").style.display=
+  mode==="individual"?"block":"none";
 };
 
 $("o2b-filter").onchange=()=>{
+
  filter=$("o2b-filter").value;
+
  renderList();
 };
 
@@ -324,7 +449,6 @@ $("o2b-download").onchange=()=>{
  downloadMode=$("o2b-download").value;
 };
 
-/* SCAN CHAPTER LIST */
 /* SCAN CHAPTER LIST */
 
 $("o2b-scan").onclick=async()=>{
@@ -343,20 +467,23 @@ $("o2b-scan").onclick=async()=>{
    {credentials:"include"}
   );
 
-  if(!response.ok)
+  if(!response.ok){
    throw Error("Bulk API error "+response.status);
+  }
 
   const list=await response.json();
 
-  if(!Array.isArray(list))
+  if(!Array.isArray(list)){
    throw Error("Unexpected chapter list response.");
+  }
 
   const sorted=list
    .filter(r=>r&&r.id)
    .sort((a,b)=>Number(a.position)-Number(b.position));
 
-  if(!sorted.length)
+  if(!sorted.length){
    throw Error("No chapter records found.");
+  }
 
   status("Organising "+sorted.length+" chapter records...");
 
@@ -382,7 +509,9 @@ $("o2b-scan").onclick=async()=>{
    });
 
    if(batch.length>=100){
+
     await saveMany(batch.splice(0));
+
     status(
      "Saving chapter list...\n"+
      "Processed "+(i+1)+" of "+sorted.length
@@ -390,7 +519,9 @@ $("o2b-scan").onclick=async()=>{
    }
   }
 
-  if(batch.length)await saveMany(batch);
+  if(batch.length){
+   await saveMany(batch);
+  }
 
   await refreshCount();
   renderList();
@@ -411,12 +542,19 @@ $("o2b-scan").onclick=async()=>{
 
  }
 };
- 
+
 /* CHAPTER CHECKBOXES */
 
 function matchesFilter(r){
- if(filter==="finished")return r.status==="finished";
- if(filter==="unfinished")return r.status!=="finished";
+
+ if(filter==="finished"){
+  return r.status==="finished";
+ }
+
+ if(filter==="unfinished"){
+  return r.status!=="finished";
+ }
+
  return true;
 }
 
@@ -429,34 +567,54 @@ function renderList(){
  const visible=records.filter(matchesFilter);
 
  list.innerHTML=visible.map(r=>`
- <label style="
- display:flex;gap:9px;align-items:flex-start;
- padding:9px;border-bottom:1px solid #444">
- <input type="checkbox" data-id="${esc(r.id)}"
- ${selected.has(r.id)?"checked":""}
- style="width:19px;height:19px;flex-shrink:0">
- <span>
- <b>${r.recordNumber}. ${esc(r.title||"Untitled")}</b>
- <br><small style="color:#aaa">${esc(r.status)}</small>
- </span>
- </label>
+  <label style="
+  display:flex;
+  gap:9px;
+  align-items:flex-start;
+  padding:9px;
+  border-bottom:1px solid #444">
+
+   <input type="checkbox"
+   data-id="${esc(r.id)}"
+   ${selected.has(r.id)?"checked":""}
+   style="width:19px;height:19px;flex-shrink:0">
+
+   <span>
+    <b>${r.recordNumber}. ${esc(r.title||"Untitled")}</b>
+    <br>
+    <small style="color:#aaa">${esc(r.status)}</small>
+   </span>
+
+  </label>
  `).join("")||"No chapters match this filter.";
 
  list.querySelectorAll("input").forEach(box=>{
+
   box.onchange=()=>{
-   if(box.checked)selected.add(box.dataset.id);
-   else selected.delete(box.dataset.id);
+
+   if(box.checked){
+    selected.add(box.dataset.id);
+   }else{
+    selected.delete(box.dataset.id);
+   }
+
   };
+
  });
 }
 
 $("o2b-selectall").onclick=()=>{
- records.filter(matchesFilter).forEach(r=>selected.add(r.id));
+
+ records.filter(matchesFilter)
+  .forEach(r=>selected.add(r.id));
+
  renderList();
 };
 
 $("o2b-clear").onclick=()=>{
+
  selected.clear();
+
  renderList();
 };
 
@@ -467,17 +625,22 @@ function getSelection(){
  let list=records.filter(matchesFilter);
 
  if(mode==="range"){
+
   const from=Number($("o2b-from").value);
   const to=Number($("o2b-to").value);
 
-  if(!Number.isInteger(from)||!Number.isInteger(to)||from<1||to<from)
+  if(
+   !Number.isInteger(from)||
+   !Number.isInteger(to)||
+   from<1||
+   to<from
+  ){
    throw Error("Enter a valid chapter range.");
-
-  rangeStart=from;
-  rangeEnd=to;
+  }
 
   list=list.filter(r=>
-   r.recordNumber>=from&&r.recordNumber<=to
+   r.recordNumber>=from&&
+   r.recordNumber<=to
   );
  }
 
@@ -498,11 +661,13 @@ $("o2b-start").onclick=async()=>{
 
   const chosen=getSelection();
 
-  if(!chosen.length)
+  if(!chosen.length){
    throw Error("No chapters selected.");
+  }
 
   running=true;
   paused=false;
+
   $("o2b-start").disabled=true;
 
   const total=chosen.length;
@@ -531,13 +696,15 @@ $("o2b-start").onclick=async()=>{
      credentials:"include"
     });
 
-    if(!response.ok)
+    if(!response.ok){
      throw Error("API returned "+response.status);
+    }
 
     const data=await response.json();
 
-    if(data.threadId!==threadId)
+    if(data.threadId!==threadId){
      throw Error("Different novel detected.");
+    }
 
     const chunks=data.state?.chunks||{};
 
@@ -571,6 +738,7 @@ $("o2b-start").onclick=async()=>{
     );
 
     await new Promise(r=>setTimeout(r,300));
+
    }
 
    await refreshCount();
@@ -582,49 +750,172 @@ $("o2b-start").onclick=async()=>{
     "Completed this session: "+completed+
     "\nStarting next batch..."
    );
+
   }
 
   await refreshCount();
 
   if(paused){
-   status("Paused safely. Saved chapters are retained. Press START / RESUME to continue.");
+
+   status(
+    "Paused safely. Saved chapters are retained. Press START / RESUME to continue."
+   );
+
   }else{
-   status("Scraping complete!\nSelected chapters: "+total+
+
+   status(
+    "Scraping complete!\n"+
+    "Selected chapters: "+total+
     "\nNewly scraped: "+completed+
-    "\nAlready saved: "+(total-todo.length));
+    "\nAlready saved: "+(total-todo.length)
+   );
+
   }
 
  }catch(e){
+
   status("Scraping stopped: "+e.message);
+
  }finally{
+
   running=false;
   $("o2b-start").disabled=false;
+
  }
 };
 
 $("o2b-stop").onclick=()=>{
+
  if(!running){
   status("No scraping is running.");
   return;
  }
+
  paused=true;
+
  status("Pausing after the current chapter...");
 };
 
-/* EPUB LIBRARY */
+/* EPUB STYLES */
 
-async function loadZip(){
-
- if(window.JSZip)return;
-
- await new Promise((resolve,reject)=>{
-  const s=document.createElement("script");
-  s.src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
-  s.onload=resolve;
-  s.onerror=()=>reject(Error("Could not load ZIP library."));
-  document.head.appendChild(s);
- });
+const epubCSS=`
+html{
+ font-family:serif;
+ -webkit-text-size-adjust:100%;
+ text-size-adjust:100%;
 }
+
+body{
+ margin:5%;
+ line-height:1.65;
+ font-family:serif;
+ font-size:1em;
+ text-align:justify;
+}
+
+h1{
+ font-family:sans-serif;
+ font-size:1.45em;
+ line-height:1.3;
+ text-align:center;
+ margin:0 0 2em;
+ padding:0 0 .8em;
+ border-bottom:1px solid #999;
+ page-break-before:always;
+ break-before:page;
+}
+
+h2,h3,h4,h5,h6{
+ font-family:sans-serif;
+ line-height:1.4;
+ margin:1.5em 0 .7em;
+ text-align:left;
+}
+
+p{
+ margin:0 0 1em;
+ text-indent:1.2em;
+ orphans:2;
+ widows:2;
+}
+
+p:first-of-type{
+ text-indent:0;
+}
+
+strong,b{
+ font-weight:bold;
+}
+
+em,i{
+ font-style:italic;
+}
+
+del,s{
+ text-decoration:line-through;
+}
+
+code{
+ font-family:monospace;
+ font-size:.9em;
+}
+
+blockquote{
+ margin:1em 1.2em;
+ padding-left:1em;
+ border-left:.2em solid #999;
+}
+
+hr{
+ border:0;
+ border-top:1px solid #999;
+ margin:2em auto;
+ width:40%;
+}
+
+a{
+ color:inherit;
+ text-decoration:underline;
+}
+`;
+
+/* EPUB MARKDOWN BLOCKS */
+
+function formatBlock(p){
+
+ const trimmed=p.trim();
+
+ if(!trimmed)return "";
+
+ if(/^#{1,6}\s/.test(trimmed)){
+
+  const level=Math.min(
+   6,
+   (trimmed.match(/^#+/)||["#"])[0].length
+  );
+
+  const content=trimmed.replace(/^#{1,6}\s*/,"");
+
+  return "<h"+level+">"+
+   formatMarkdown(content)+
+   "</h"+level+">";
+ }
+
+ if(/^>\s?/.test(trimmed)){
+
+  return "<blockquote><p>"+
+   formatMarkdown(trimmed.replace(/^>\s?/gm,""))+
+   "</p></blockquote>";
+ }
+
+ if(/^---+$/.test(trimmed)){
+  return "<hr/>";
+ }
+
+ return "<p>"+formatMarkdown(trimmed)+"</p>";
+}
+
+/* EPUB GENERATOR */
 
 async function makeEPUB(list,title){
 
@@ -635,55 +926,176 @@ async function makeEPUB(list,title){
  });
 
  zip.file("META-INF/container.xml",
- '<?xml version="1.0"?>'+
- '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'+
- '<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>'+
- '</container>');
+  '<?xml version="1.0" encoding="UTF-8"?>'+
+  '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'+
+  '<rootfiles>'+
+  '<rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>'+
+  '</rootfiles>'+
+  '</container>'
+ );
 
- let manifest="",spine="",nav="";
+ zip.file("OEBPS/styles.css",epubCSS);
+
+ let manifest="";
+ let spine="";
+ let nav="";
+
+ const modified=new Date().toISOString()
+  .replace(/\.\d{3}Z$/,"Z");
 
  list.forEach((r,i)=>{
 
   const fn="chapter-"+String(i+1).padStart(5,"0")+".xhtml";
-  const chapterTitle=r.title||"Record "+r.recordNumber;
+
+  const chapterTitle=r.title||"Chapter "+r.recordNumber;
 
   const body=(r.text||"[No translated text available.]")
- .split(/\n\s*\n/)
- .map(p=>"<p>"+formatMarkdown(p)+"</p>")
- .join("");
+   .split(/\n\s*\n/)
+   .map(formatBlock)
+   .join("");
 
   zip.file("OEBPS/"+fn,
+
    '<?xml version="1.0" encoding="UTF-8"?>'+
-   '<html xmlns="http://www.w3.org/1999/xhtml">'+
-   '<head><title>'+esc(chapterTitle)+'</title></head>'+
-   '<body><h1>'+esc(chapterTitle)+'</h1>'+body+'</body></html>'
+
+   '<html xmlns="http://www.w3.org/1999/xhtml" '+
+   'xmlns:epub="http://www.idpf.org/2007/ops" '+
+   'lang="en" xml:lang="en">'+
+
+   '<head>'+
+   '<title>'+esc(chapterTitle)+'</title>'+
+   '<link rel="stylesheet" type="text/css" href="styles.css"/>'+
+   '</head>'+
+
+   '<body>'+
+   '<section epub:type="chapter" role="doc-chapter">'+
+   '<h1>'+esc(chapterTitle)+'</h1>'+
+   body+
+   '</section>'+
+   '</body></html>'
   );
 
-  manifest+='<item id="c'+i+'" href="'+fn+'" media-type="application/xhtml+xml"/>';
-  spine+='<itemref idref="c'+i+'"/>';
-  nav+='<li><a href="'+fn+'">'+esc(chapterTitle)+'</a></li>';
+  manifest+=
+   '<item id="c'+i+'" href="'+fn+'" media-type="application/xhtml+xml"/>';
+
+  spine+=
+   '<itemref idref="c'+i+'"/>';
+
+  nav+=
+   '<li><a href="'+fn+'">'+esc(chapterTitle)+'</a></li>';
+
  });
 
+/* TABLE OF CONTENTS */
+
  zip.file("OEBPS/nav.xhtml",
- '<?xml version="1.0"?>'+
- '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">'+
- '<head><title>Contents</title></head>'+
- '<body><nav epub:type="toc"><h1>Contents</h1><ol>'+nav+'</ol></nav></body></html>');
+
+  '<?xml version="1.0" encoding="UTF-8"?>'+
+
+  '<html xmlns="http://www.w3.org/1999/xhtml" '+
+  'xmlns:epub="http://www.idpf.org/2007/ops" '+
+  'lang="en" xml:lang="en">'+
+
+  '<head>'+
+  '<title>Table of Contents</title>'+
+  '<link rel="stylesheet" type="text/css" href="styles.css"/>'+
+  '</head>'+
+
+  '<body>'+
+
+  '<nav epub:type="toc" id="toc" role="doc-toc">'+
+  '<h1>Table of Contents</h1>'+
+  '<ol>'+nav+'</ol>'+
+  '</nav>'+
+
+  '<nav epub:type="landmarks" hidden="hidden">'+
+  '<h2>Guide</h2>'+
+  '<ol>'+
+  '<li><a epub:type="toc" href="nav.xhtml#toc">Table of Contents</a></li>'+
+  '<li><a epub:type="bodymatter" href="chapter-00001.xhtml">Start of content</a></li>'+
+  '</ol>'+
+  '</nav>'+
+
+  '</body></html>'
+ );
+
+/* EPUB METADATA */
 
  zip.file("OEBPS/content.opf",
- '<?xml version="1.0"?>'+
- '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">'+
- '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'+
- '<dc:identifier id="uid">omni-'+threadId+'-'+title+'</dc:identifier>'+
- '<dc:title>'+esc(novelTitle+" - "+title)+'</dc:title>'+
- '<dc:language>en</dc:language></metadata>'+
- '<manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'+
- manifest+'</manifest><spine>'+spine+'</spine></package>');
+
+  '<?xml version="1.0" encoding="UTF-8"?>'+
+
+  '<package xmlns="http://www.idpf.org/2007/opf" '+
+  'version="3.0" unique-identifier="bookid" xml:lang="en" '+
+  'prefix="dcterms: http://purl.org/dc/terms/">'+
+
+  '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'+
+
+  '<dc:identifier id="bookid">urn:uuid:'+
+  esc(threadId+"-"+title.toLowerCase())+
+  '</dc:identifier>'+
+
+  '<dc:title>'+
+  esc(novelTitle+(title==="Complete"?"":" - "+title))+
+  '</dc:title>'+
+
+  '<dc:language>en</dc:language>'+
+  '<dc:creator>Beryll TL</dc:creator>'+
+  '<dc:publisher>Beryll TL</dc:publisher>'+
+
+  '<dc:description>'+
+  esc("EPUB export of "+novelTitle+" from OmniTranslate.")+
+  '</dc:description>'+
+
+  '<meta property="dcterms:modified">'+modified+'</meta>'+
+
+  '</metadata>'+
+
+  '<manifest>'+
+
+  '<item id="nav" href="nav.xhtml" '+
+  'media-type="application/xhtml+xml" properties="nav"/>'+
+
+  '<item id="css" href="styles.css" media-type="text/css"/>'+
+
+  manifest+
+
+  '</manifest>'+
+
+  '<spine>'+spine+'</spine>'+
+
+  '</package>'
+ );
 
  return zip.generateAsync({
   type:"uint8array",
   compression:"DEFLATE"
  });
+
+}
+
+/* ZIP LIBRARY */
+
+async function loadZip(){
+
+ if(window.JSZip)return;
+
+ await new Promise((resolve,reject)=>{
+
+  const s=document.createElement("script");
+
+  s.src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+
+  s.onload=resolve;
+
+  s.onerror=()=>{
+   reject(Error("Could not load ZIP library."));
+  };
+
+  document.head.appendChild(s);
+
+ });
+
 }
 
 /* BUILD DOWNLOAD */
@@ -706,72 +1118,120 @@ $("o2b-build").onclick=async()=>{
   await loadZip();
 
   let chosen=getSelection();
+
   chosen=chosen.filter(r=>r.text);
 
-  if(!chosen.length)
+  if(!chosen.length){
    throw Error("No scraped chapters in the current selection.");
+  }
 
   const finished=chosen.filter(r=>r.status==="finished");
   const unfinished=chosen.filter(r=>r.status!=="finished");
 
   const zip=new JSZip();
+
   const name=filename(novelTitle);
 
   if(downloadMode==="finished"){
-   if(!finished.length)throw Error("No finished chapters were scraped.");
-   zip.file(name+" - Finished.epub",await makeEPUB(finished,"Finished"));
+
+   if(!finished.length){
+    throw Error("No finished chapters were scraped.");
+   }
+
+   zip.file(
+    name+" - Finished.epub",
+    await makeEPUB(finished,"Finished")
+   );
   }
 
   if(downloadMode==="unfinished"){
-   if(!unfinished.length)throw Error("No unfinished chapters were scraped.");
-   zip.file(name+" - Unfinished.epub",await makeEPUB(unfinished,"Unfinished"));
+
+   if(!unfinished.length){
+    throw Error("No unfinished chapters were scraped.");
+   }
+
+   zip.file(
+    name+" - Unfinished.epub",
+    await makeEPUB(unfinished,"Unfinished")
+   );
   }
 
   if(downloadMode==="both"){
 
-   if(finished.length)
-    zip.file("Finished/"+name+" - Finished.epub",
-     await makeEPUB(finished,"Finished"));
+   if(finished.length){
 
-   if(unfinished.length)
-    zip.file("Unfinished/"+name+" - Unfinished.epub",
-     await makeEPUB(unfinished,"Unfinished"));
+    zip.file(
+     "Finished/"+name+" - Finished.epub",
+     await makeEPUB(finished,"Finished")
+    );
+
+   }
+
+   if(unfinished.length){
+
+    zip.file(
+     "Unfinished/"+name+" - Unfinished.epub",
+     await makeEPUB(unfinished,"Unfinished")
+    );
+
+   }
   }
 
   if(downloadMode==="combined"){
-   zip.file(name+" - Complete.epub",
-    await makeEPUB(chosen,"Complete"));
+
+   zip.file(
+    name+" - Complete.epub",
+    await makeEPUB(chosen,"Complete")
+   );
+
   }
 
-  zip.file("Manifest/chapters.json",JSON.stringify({
-   novel:novelTitle,
-   threadId,
-   exportedRecords:chosen.length,
-   finished:finished.length,
-   unfinished:unfinished.length,
-   chapters:chosen.map(r=>({
-    id:r.id,
-    recordNumber:r.recordNumber,
-    title:r.title,
-    status:r.status,
-    translatedCharacters:r.text.length
-   }))
-  },null,2));
+  zip.file(
+   "Manifest/chapters.json",
+   JSON.stringify({
+
+    novel:novelTitle,
+    threadId,
+
+    exportedRecords:chosen.length,
+    finished:finished.length,
+    unfinished:unfinished.length,
+
+    chapters:chosen.map(r=>({
+
+     id:r.id,
+     recordNumber:r.recordNumber,
+     title:r.title,
+     status:r.status,
+     translatedCharacters:r.text.length
+
+    }))
+
+   },null,2)
+  );
 
   status("Preparing ZIP download...");
 
-  const blob=await zip.generateAsync({type:"blob"});
+  const blob=await zip.generateAsync({
+   type:"blob"
+  });
+
   const url=URL.createObjectURL(blob);
+
   const a=document.createElement("a");
 
   a.href=url;
   a.download=name+" - Omni Export.zip";
 
   document.body.appendChild(a);
+
   a.click();
+
   a.remove();
 
-  setTimeout(()=>URL.revokeObjectURL(url),60000);
+  setTimeout(()=>{
+   URL.revokeObjectURL(url);
+  },60000);
 
   status(
    "DOWNLOAD READY!\n"+
@@ -782,27 +1242,38 @@ $("o2b-build").onclick=async()=>{
   );
 
  }catch(e){
+
   status("Download failed: "+e.message);
+
  }
+
 };
 
 /* CLOSE */
 
 $("o2b-close").onclick=()=>{
+
  if(running||scanning){
   alert("Pause scraping or wait for scanning to finish first.");
   return;
  }
+
  panel.remove();
+
 };
 
 /* STARTUP */
 
 try{
+
  await openDB();
+
  await initialise();
+
 }catch(e){
+
  status("Setup error: "+e.message);
+
 }
 
 })();
