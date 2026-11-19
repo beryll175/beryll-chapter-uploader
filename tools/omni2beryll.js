@@ -1,7 +1,7 @@
 (async()=>{
 "use strict";
 
-/* OMNI → BERYLL EXPORTER V4.2 */
+/* OMNI → BERYLL EXPORTER V4.3 */
 
 const API="https://api.readomni.com/translation/";
 const DB="omni2beryll-v2";
@@ -48,7 +48,7 @@ box-shadow:0 5px 30px #0009;
 panel.innerHTML=`
 <div style="font-size:21px;font-weight:bold;color:#ff9800">
 Omni → Beryll Exporter
-<span style="font-size:11px;color:#aaa">V4.2</span>
+<span style="font-size:11px;color:#aaa">V4.3</span>
 </div>
 
 <div id="o2b-novel" style="
@@ -654,15 +654,16 @@ function getSelection(){
  return list;
 }
 
-/* END OF PART 1 */
-
- /* SCRAPING ENGINE V4.2 */
+/* SCRAPING ENGINE V4.3 */
 
 function sleep(ms){
  return new Promise(resolve=>setTimeout(resolve,ms));
 }
 
-/* FETCH WITH RETRIES */
+/* FETCH WITH RETRIES
+   Translation is preferred.
+   If no translation exists, use original draft text.
+*/
 
 async function fetchChapter(record){
 
@@ -694,15 +695,34 @@ async function fetchChapter(record){
     .filter(Boolean)
     .join("\n\n");
 
-   if(!translated.trim()){
-    throw Error("No translated text found.");
+   /* FALLBACK TO ORIGINAL DRAFT TEXT */
+
+   const draftText=
+    typeof data.input?.text==="string"
+     ?data.input.text.trim()
+     :"";
+
+   const chapterText=
+    translated.trim()
+     ?translated
+     :draftText;
+
+   if(!chapterText){
+    throw Error("No translated or draft text found.");
    }
+
+   const chapterTitle=
+    data.title||
+    data.input?.title||
+    data.metadata?.sourceTitle||
+    record.title||
+    "";
 
    return {
     ...record,
-    text:translated,
+    text:chapterText,
     status:data.status||record.status,
-    title:data.title||record.title
+    title:chapterTitle
    };
 
   }catch(e){
@@ -795,8 +815,6 @@ $("o2b-start").onclick=async()=>{
    "\nRetries per chapter: "+RETRIES
   );
 
-  /* PROCESS A GROUP */
-
   async function processGroup(group){
 
    let nextIndex=0;
@@ -872,8 +890,6 @@ $("o2b-start").onclick=async()=>{
 
   }
 
-  /* PROCESS ALL GROUPS WITHOUT MUTATING TODO */
-
   for(let i=0;i<todo.length;i+=batchSize){
 
    if(paused)break;
@@ -897,8 +913,6 @@ $("o2b-start").onclick=async()=>{
    );
 
   }
-
-  /* SAVE ANY REMAINING COMPLETED CHAPTERS */
 
   await flushSaves();
 
@@ -1164,8 +1178,6 @@ async function makeEPUB(list,title){
 
  });
 
- /* TABLE OF CONTENTS */
-
  zip.file("OEBPS/nav.xhtml",
 
   '<?xml version="1.0" encoding="UTF-8"?>'+
@@ -1196,8 +1208,6 @@ async function makeEPUB(list,title){
 
   '</body></html>'
  );
-
- /* EPUB METADATA */
 
  zip.file("OEBPS/content.opf",
 
