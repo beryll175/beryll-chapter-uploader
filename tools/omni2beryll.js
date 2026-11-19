@@ -316,86 +316,82 @@ $("o2b-scan").onclick=async()=>{
 
  try{
 
+  status("Fetching complete chapter list...");
+
+  const response=await fetch(
+   "https://api.readomni.com/thread/"+threadId+"/translation",
+   {credentials:"include"}
+  );
+
+  if(!response.ok)
+   throw Error("Bulk API error "+response.status);
+
+  const list=await response.json();
+
+  if(!Array.isArray(list))
+   throw Error("Unexpected chapter list response.");
+
+  const sorted=list
+   .filter(r=>r&&r.id)
+   .sort((a,b)=>Number(a.position)-Number(b.position));
+
+  if(!sorted.length)
+   throw Error("No chapter records found.");
+
+  status("Organising "+sorted.length+" chapter records...");
+
   const existing=await getRecords();
   const byId=new Map(existing.map(r=>[r.id,r]));
 
-  let id=firstId;
-  let number=1;
-  let found=0;
-  let pending=[];
+  const batch=[];
 
-  status("Preparing fast scan...");
+  for(let i=0;i<sorted.length;i++){
 
-  while(id){
+   const item=sorted[i];
+   const old=byId.get(item.id)||{};
 
-   const saved=byId.get(id);
-
-   if(saved){
-    id=saved.nextId;
-    number++;
-    continue;
-   }
-
-   const response=await fetch(API+id,{
-    credentials:"include"
+   batch.push({
+    ...old,
+    id:item.id,
+    threadId,
+    recordNumber:i+1,
+    title:item.title||old.title||"",
+    status:item.status||old.status||"unknown",
+    text:old.text||"",
+    nextId:sorted[i+1]?.id||null
    });
 
-   if(!response.ok)throw Error("API error "+response.status);
-
-   const data=await response.json();
-
-   if(data.threadId!==threadId)
-    throw Error("Different novel detected. Scan stopped.");
-
-   const record={
-    id,
-    threadId,
-    recordNumber:number,
-    title:data.title||"",
-    status:data.status||"unknown",
-    text:"",
-    nextId:data.next?.id||null
-   };
-
-   pending.push(record);
-   byId.set(id,record);
-   found++;
-
-   id=record.nextId;
-   number++;
-
-   if(pending.length>=25){
-    await saveMany(pending);
-    pending=[];
-   }
-
-   if(found%10===0){
+   if(batch.length>=100){
+    await saveMany(batch.splice(0));
     status(
-     "Fast scan in progress...\n"+
-     "Records discovered: "+number+
-     "\nNew records: "+found+
-     "\nSaved in batches of 25"
+     "Saving chapter list...\n"+
+     "Processed "+(i+1)+" of "+sorted.length
     );
    }
   }
 
-  if(pending.length)await saveMany(pending);
+  if(batch.length)await saveMany(batch);
 
   await refreshCount();
   renderList();
 
-  status("Scan complete. "+records.length+
-   " chapter records discovered.\nChoose your chapters and start scraping.");
+  status(
+   "Fast scan complete!\n"+
+   sorted.length+" chapter records discovered."
+  );
 
  }catch(e){
-  status("Scan stopped: "+e.message+
-   "\nSaved batches are retained. Press SCAN again to resume.");
+
+  status("Scan failed: "+e.message);
+
  }finally{
+
   scanning=false;
   $("o2b-scan").disabled=false;
+
  }
 };
-
+ 
 /* CHAPTER CHECKBOXES */
 
 function matchesFilter(r){
