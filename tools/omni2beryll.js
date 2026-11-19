@@ -1,10 +1,14 @@
 (async()=>{
 "use strict";
 
-/* OMNI → BERYLL EXPORTER V4 */
+/* OMNI → BERYLL EXPORTER V4.2 */
 
 const API="https://api.readomni.com/translation/";
 const DB="omni2beryll-v2";
+
+const CONCURRENCY=4;
+const RETRIES=3;
+const SAVE_BATCH=10;
 
 if(document.getElementById("o2b-panel")){
  alert("Exporter is already open.");
@@ -44,7 +48,7 @@ box-shadow:0 5px 30px #0009;
 panel.innerHTML=`
 <div style="font-size:21px;font-weight:bold;color:#ff9800">
 Omni → Beryll Exporter
-<span style="font-size:11px;color:#aaa">V4.0</span>
+<span style="font-size:11px;color:#aaa">V4.2</span>
 </div>
 
 <div id="o2b-novel" style="
@@ -254,7 +258,6 @@ function esc(s){
 function formatMarkdown(s){
 
  let text=esc(s);
-
  const code=[];
 
  text=text.replace(/`([^`]+)`/g,(_,value)=>{
@@ -651,6 +654,103 @@ function getSelection(){
  return list;
 }
 
+/* END OF PART 1 */
+
+ /* SCRAPING ENGINE V4.2 */
+
+function sleep(ms){
+ return new Promise(resolve=>setTimeout(resolve,ms));
+}
+
+/* FETCH WITH RETRIES */
+
+async function fetchChapter(record){
+
+ let lastError;
+
+ for(let attempt=1;attempt<=RETRIES;attempt++){
+
+  try{
+
+   const response=await fetch(API+record.id,{
+    credentials:"include"
+   });
+
+   if(!response.ok){
+    throw Error("API returned HTTP "+response.status);
+   }
+
+   const data=await response.json();
+
+   if(data.threadId!==threadId){
+    throw Error("Different novel detected.");
+   }
+
+   const chunks=data.state?.chunks||{};
+
+   const translated=Object.keys(chunks)
+    .sort((a,b)=>Number(a)-Number(b))
+    .map(k=>chunks[k]?.translation||"")
+    .filter(Boolean)
+    .join("\n\n");
+
+   if(!translated.trim()){
+    throw Error("No translated text found.");
+   }
+
+   return {
+    ...record,
+    text:translated,
+    status:data.status||record.status,
+    title:data.title||record.title
+   };
+
+  }catch(e){
+
+   lastError=e;
+
+   if(attempt<RETRIES){
+    await sleep(500*attempt);
+   }
+
+  }
+
+ }
+
+ throw lastError||Error("Chapter failed after retries.");
+}
+
+/* GROUPED DATABASE SAVING */
+
+let pendingSaves=[];
+let saveChain=Promise.resolve();
+
+function flushSaves(){
+
+ if(!pendingSaves.length){
+  return saveChain;
+ }
+
+ const batch=pendingSaves.splice(0);
+
+ saveChain=saveChain.then(
+  ()=>saveMany(batch),
+  ()=>saveMany(batch)
+ );
+
+ return saveChain;
+}
+
+async function queueSave(record){
+
+ pendingSaves.push(record);
+
+ if(pendingSaves.length>=SAVE_BATCH){
+  await flushSaves();
+ }
+
+}
+
 /* SCRAPE CHAPTER TEXT */
 
 $("o2b-start").onclick=async()=>{
@@ -671,105 +771,178 @@ $("o2b-start").onclick=async()=>{
   $("o2b-start").disabled=true;
 
   const total=chosen.length;
-  let completed=0;
-
   const todo=chosen.filter(r=>!r.text);
 
+  const alreadySaved=total-todo.length;
+
+  let completed=0;
+  let succeeded=0;
+  let failed=0;
+  const failures=[];
+
+  pendingSaves=[];
+  saveChain=Promise.resolve();
+
+  $("o2b-bar").style.width=
+   (alreadySaved/total*100)+"%";
+
   status(
-   "Starting scraping...\n"+
+   "Starting optimized scraping...\n"+
    "Selected chapters: "+total+
-   "\nAlready saved: "+(total-todo.length)+
-   "\nRemaining: "+todo.length
+   "\nAlready saved: "+alreadySaved+
+   "\nRemaining: "+todo.length+
+   "\nConcurrent requests: "+CONCURRENCY+
+   "\nRetries per chapter: "+RETRIES
   );
+
+  /* PROCESS A GROUP */
+
+  async function processGroup(group){
+
+   let nextIndex=0;
+
+   async function worker(){
+
+    while(!paused){
+
+     const index=nextIndex++;
+
+     if(index>=group.length)return;
+
+     const original=group[index];
+
+     try{
+
+      const saved=await fetchChapter(original);
+
+      await queueSave(saved);
+
+      Object.assign(original,saved);
+
+      succeeded++;
+
+     }catch(e){
+
+      failed++;
+
+      failures.push({
+       chapter:original.recordNumber,
+       title:original.title||"Untitled",
+       error:e.message
+      });
+
+      console.warn(
+       "Beryll exporter: chapter failed",
+       original.recordNumber,
+       e
+      );
+
+     }
+
+     completed++;
+
+     const percent=Math.round(
+      (alreadySaved+completed)/total*100
+     );
+
+     $("o2b-bar").style.width=percent+"%";
+
+     status(
+      "Scraping chapters...\n"+
+      "Completed this session: "+completed+
+      "\nSuccessful: "+succeeded+
+      "\nFailed: "+failed+
+      "\nAlready saved: "+alreadySaved+
+      "\nRemaining: "+(todo.length-completed)+
+      "\nCurrent chapter: "+original.recordNumber+
+      "\n"+(original.title||"Untitled")+
+      "\nConcurrent requests: "+CONCURRENCY
+     );
+
+    }
+
+   }
+
+   const workers=Array.from(
+    {length:Math.min(CONCURRENCY,group.length)},
+    ()=>worker()
+   );
+
+   await Promise.all(workers);
+
+  }
+
+  /* PROCESS ALL GROUPS WITHOUT MUTATING TODO */
 
   for(let i=0;i<todo.length;i+=batchSize){
 
    if(paused)break;
 
-   const batch=todo.slice(i,i+batchSize);
+   const group=todo.slice(i,i+batchSize);
 
-   for(const record of batch){
-
-    if(paused)break;
-
-    const response=await fetch(API+record.id,{
-     credentials:"include"
-    });
-
-    if(!response.ok){
-     throw Error("API returned "+response.status);
-    }
-
-    const data=await response.json();
-
-    if(data.threadId!==threadId){
-     throw Error("Different novel detected.");
-    }
-
-    const chunks=data.state?.chunks||{};
-
-    const translated=Object.keys(chunks)
-     .sort((a,b)=>Number(a)-Number(b))
-     .map(k=>chunks[k].translation||"")
-     .filter(Boolean)
-     .join("\n\n");
-
-    record.text=translated;
-    record.status=data.status||record.status;
-    record.title=data.title||record.title;
-
-    await save(record);
-
-    completed++;
-
-    const percent=Math.round(
-     (completed+(total-todo.length))/total*100
-    );
-
-    $("o2b-bar").style.width=percent+"%";
-
-    status(
-     "Scraping chapters...\n"+
-     "Completed this session: "+completed+
-     "\nRemaining: "+(todo.length-completed)+
-     "\nCurrent: "+record.recordNumber+
-     "\n"+(record.title||"Untitled")+
-     "\nBatch size: "+batchSize
-    );
-
-    await new Promise(r=>setTimeout(r,300));
-
-   }
-
-   await refreshCount();
+   await processGroup(group);
 
    if(paused)break;
 
+   await flushSaves();
+
+   await refreshCount();
+
    status(
-    "Batch saved successfully.\n"+
-    "Completed this session: "+completed+
-    "\nStarting next batch..."
+    "Batch checkpoint saved.\n"+
+    "Successful: "+succeeded+
+    "\nFailed: "+failed+
+    "\nCompleted: "+completed+
+    "\nPreparing next batch..."
    );
 
   }
+
+  /* SAVE ANY REMAINING COMPLETED CHAPTERS */
+
+  await flushSaves();
 
   await refreshCount();
 
   if(paused){
 
    status(
-    "Paused safely. Saved chapters are retained. Press START / RESUME to continue."
+    "PAUSED SAFELY.\n"+
+    "Completed this session: "+completed+
+    "\nSuccessful: "+succeeded+
+    "\nFailed: "+failed+
+    "\nSaved chapters are retained.\n"+
+    "Press START / RESUME to continue."
    );
 
   }else{
 
    status(
-    "Scraping complete!\n"+
+    "SCRAPING FINISHED!\n"+
     "Selected chapters: "+total+
-    "\nNewly scraped: "+completed+
-    "\nAlready saved: "+(total-todo.length)
+    "\nAlready saved: "+alreadySaved+
+    "\nNewly scraped: "+succeeded+
+    "\nFailed: "+failed+
+    "\nTotal saved: "+records.filter(r=>r.text).length+
+    (
+     failures.length
+      ?"\n\nFailed chapters:\n"+
+       failures.map(f=>
+        "Chapter "+f.chapter+": "+f.error
+       ).join("\n")
+      :""
+    )+
+    (
+     failed
+      ?"\n\nPress START / RESUME to retry missing chapters."
+      :""
+    )
    );
 
+  }
+
+  if(failures.length){
+   console.table(failures);
   }
 
  }catch(e){
@@ -782,6 +955,7 @@ $("o2b-start").onclick=async()=>{
   $("o2b-start").disabled=false;
 
  }
+
 };
 
 $("o2b-stop").onclick=()=>{
@@ -793,7 +967,11 @@ $("o2b-stop").onclick=()=>{
 
  paused=true;
 
- status("Pausing after the current chapter...");
+ status(
+  "Pause requested.\n"+
+  "Current requests will finish and save before scraping stops."
+ );
+
 };
 
 /* EPUB STYLES */
@@ -986,7 +1164,7 @@ async function makeEPUB(list,title){
 
  });
 
-/* TABLE OF CONTENTS */
+ /* TABLE OF CONTENTS */
 
  zip.file("OEBPS/nav.xhtml",
 
@@ -1019,7 +1197,7 @@ async function makeEPUB(list,title){
   '</body></html>'
  );
 
-/* EPUB METADATA */
+ /* EPUB METADATA */
 
  zip.file("OEBPS/content.opf",
 
