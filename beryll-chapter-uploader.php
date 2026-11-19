@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Beryll Chapter Uploader
  * Description: Import Fictioneer chapters from ZIP/DOCX or EPUB files, detect duplicates, publish immediately, and schedule by selected weekdays.
- * Version: 2.3.1
+ * Version: 2.4.0
  * Author: Beryll TL
  * Requires at least: 6.0
  * Requires PHP: 7.4
@@ -10,7 +10,7 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 class Beryll_Chapter_Uploader {
-    const VERSION = '2.3.1';
+    const VERSION = '2.4.0';
     const PAGE = 'beryll-chapter-uploader';
     const TRANSIENT_PREFIX = 'bcu_import_';
 
@@ -24,6 +24,7 @@ class Beryll_Chapter_Uploader {
 
     public function menu() {
         add_menu_page( 'Beryll Chapter Uploader', 'Chapter Uploader', 'manage_options', self::PAGE, array( $this, 'render' ), 'dashicons-upload', 26 );
+        add_submenu_page( self::PAGE, 'Patreon Release Scheduler', 'Patreon Scheduler', 'manage_options', 'bcu-patreon-scheduler', array( $this, 'render_patreon_scheduler' ) );
     }
 
     private function notice( $message, $type = 'error' ) {
@@ -110,6 +111,12 @@ class Beryll_Chapter_Uploader {
         echo '<h2>Existing chapter handling</h2><p>If matching chapter numbers already exist, choose what to do:</p><label style="display:block;margin:6px 0"><input type="radio" name="duplicate_policy" value="replace" checked> <strong>Replace existing chapters</strong> (update their content while keeping their existing URLs)</label><label style="display:block;margin:6px 0"><input type="radio" name="duplicate_policy" value="skip"> <strong>Skip existing chapters</strong> (do not upload those chapters)</label><label style="display:block;margin:6px 0"><input type="radio" name="duplicate_policy" value="cancel"> <strong>Cancel import if duplicates are found</strong></label>';
         echo '<hr><h2>Publishing settings</h2><label style="display:block;margin:8px 0"><input type="checkbox" id="bcu-all-drafts" name="all_drafts" value="1"> <strong>Import all selected chapters as drafts</strong></label>';
         echo '<p><label><strong>Number of chapters to publish immediately</strong><br><input type="number" id="bcu-immediate-count" name="immediate_count" min="0" max="250" value="0" style="width:100px"> <span class="description">The remaining selected chapters will be scheduled. Skipped duplicates are excluded first.</span></label></p>';
+        echo '<hr><h2>Chapter access distribution</h2><p>Assign the first selected chapters to advance-access groups. These chapters publish immediately but remain password-protected until promoted. Any chapters left over continue through the normal free publishing schedule below.</p>';
+        echo '<div style="background:#fff;border:1px solid #ccd0d4;padding:14px;max-width:700px">';
+        echo '<p><label><strong>Vault exclusive</strong> (Beryll Vault only)<br><input type="number" name="vault_count" min="0" max="200" value="0" style="width:90px"></label></p>';
+        echo '<p><label><strong>Treasure + Vault</strong><br><input type="number" name="treasure_count" min="0" max="200" value="0" style="width:90px"></label></p>';
+        echo '<p><label><strong>Public / Free immediately</strong><br><input type="number" name="public_count" min="0" max="200" value="0" style="width:90px"></label></p>';
+        echo '<p class="description">The counts are applied in the order shown to the selected chapter list. The remaining chapters use the normal immediate/scheduled settings. Do not include the advance chapters in the normal immediate count.</p></div>';
         echo '<div id="bcu-schedule-settings" style="padding:14px;background:#fff;border:1px solid #ccd0d4;max-width:700px"><h3>Weekly schedule</h3><p><strong>Publishing days</strong></p>';
         $days = array( 1 => 'Monday', 2 => 'Tuesday', 3 => 'Wednesday', 4 => 'Thursday', 5 => 'Friday', 6 => 'Saturday', 7 => 'Sunday' );
         foreach ( $days as $n => $label ) { echo '<label style="display:inline-block;margin:0 12px 8px 0"><input class="bcu-day" type="checkbox" name="days[]" value="' . esc_attr( $n ) . '" ' . checked( in_array( $n, array( 2, 4, 6 ), true ), true, false ) . '> ' . esc_html( $label ) . '</label>'; }
@@ -135,21 +142,34 @@ class Beryll_Chapter_Uploader {
           document.getElementById('bcu-clear-groups').addEventListener('click',()=>{boxes().forEach(x=>{const input=x.closest('tr').querySelector('input[name^="groups["]');if(input)input.value='';});update();});
           function update(){
             settings.style.opacity=allDrafts.checked?'0.45':'1'; settings.querySelectorAll('input').forEach(x=>x.disabled=allDrafts.checked);
-            const selected=boxes(); immediate.max=selected.length; if(+immediate.value>selected.length) immediate.value=selected.length;
+            const selected=boxes();
             const policy=form.querySelector('input[name="duplicate_policy"]:checked').value;
             const chapters=selected.filter(x=>!(policy==='skip' && x.closest('tr').querySelector('td:nth-child(5) strong'))).map(x=>({title:x.closest('tr').querySelector('input[type="text"]').value,number:x.closest('tr').children[1].textContent}));
             const count=chapters.length;
-            if(allDrafts.checked){preview.textContent=count+' selected chapter(s) will be imported as drafts.';return;}
-            const publish=Math.min(Math.max(0,+immediate.value||0),count), toSchedule=Math.max(0,count-publish);
-            const immediateNames=chapters.slice(0,publish).map(c=>'#'+c.number+' '+c.title);
+            const vault=Math.max(0,+form.querySelector('[name="vault_count"]').value||0);
+            const treasure=Math.max(0,+form.querySelector('[name="treasure_count"]').value||0);
+            const pub=Math.max(0,+form.querySelector('[name="public_count"]').value||0);
+            const advance=vault+treasure+pub;
+            const distribution=form.querySelectorAll('[name="vault_count"],[name="treasure_count"],[name="public_count"]');
+            distribution.forEach(x=>x.disabled=allDrafts.checked);
+            if(allDrafts.checked){immediate.disabled=true;preview.textContent=count+' selected chapter(s) will be imported as drafts. Access distribution is ignored.';return;}
+            immediate.disabled=false;
+            if(advance>count){preview.textContent='Access counts total '+advance+', but only '+count+' chapter(s) are selected. Reduce the counts.';return;}
+            const normal=chapters.slice(advance); immediate.max=normal.length; if(+immediate.value>normal.length) immediate.value=normal.length;
+            const publish=Math.min(Math.max(0,+immediate.value||0),normal.length), toSchedule=Math.max(0,normal.length-publish);
+            const vaultNames=chapters.slice(0,vault).map(c=>'#'+c.number+' '+c.title);
+            const treasureNames=chapters.slice(vault,vault+treasure).map(c=>'#'+c.number+' '+c.title);
+            const publicNames=chapters.slice(vault+treasure,advance).map(c=>'#'+c.number+' '+c.title);
+            const immediateNames=normal.slice(0,publish).map(c=>'#'+c.number+' '+c.title);
             const days=Array.from(form.querySelectorAll('.bcu-day:checked')).map(x=>+x.value).sort((a,b)=>a-b);
             const per=Math.max(1,+document.getElementById('bcu-per-day').value||1);
             const date=document.getElementById('bcu-start-date').value, time=document.getElementById('bcu-publish-time').value||'19:00';
-            if(!toSchedule){preview.textContent=publish+' chapter(s) will publish immediately. '+immediateNames.join('; ');return;}
-            if(!days.length||!date){preview.textContent=publish+' publish immediately; '+toSchedule+' need scheduling. Select at least one weekday and a start date.';return;}
+            const accessSummary='Vault exclusive ('+vault+'): '+vaultNames.join('; ')+' | Treasure + Vault ('+treasure+'): '+treasureNames.join('; ')+' | Public now ('+pub+'): '+publicNames.join('; ');
+            if(!toSchedule){preview.textContent=accessSummary+' | Normal immediate ('+publish+'): '+immediateNames.join('; ');return;}
+            if(!days.length||!date){preview.textContent=accessSummary+' | Normal immediate ('+publish+'): '+immediateNames.join('; ')+' | '+toSchedule+' remaining chapter(s) need scheduling. Select at least one weekday and a start date.';return;}
             const cursor=new Date(date+'T12:00:00'); const rows=[]; let position=publish, guard=0;
             while(position<count&&guard<500){const dow=cursor.getDay()===0?7:cursor.getDay();const slotDate=cursor.getFullYear()+'-'+String(cursor.getMonth()+1).padStart(2,'0')+'-'+String(cursor.getDate()).padStart(2,'0')+' '+time;if(days.includes(dow)&&slotDate>wpNow){const group=[];for(let j=0;j<per&&position<count;j++,position++){group.push('#'+chapters[position].number+' '+escapeHtml(chapters[position].title));}rows.push('<tr><td>'+cursor.toLocaleDateString(undefined,{weekday:'short',year:'numeric',month:'short',day:'numeric'})+' '+time+'</td><td>'+group.join('<br>')+'</td></tr>');}cursor.setDate(cursor.getDate()+1);guard++;}
-            preview.innerHTML='<p><strong>'+publish+' publish immediately:</strong> '+immediateNames.map(escapeHtml).join('; ')+'<br><strong>'+toSchedule+' scheduled.</strong></p><div style="overflow-x:auto"><table class="widefat striped"><thead><tr><th>Publication</th><th>Chapters</th></tr></thead><tbody>'+rows.join('')+'</tbody></table></div>';
+            preview.innerHTML='<p><strong>'+escapeHtml(accessSummary)+'</strong><br><strong>'+publish+' normal chapters publish immediately:</strong> '+immediateNames.map(escapeHtml).join('; ')+'<br><strong>'+toSchedule+' normal chapters scheduled.</strong></p><div style="overflow-x:auto"><table class="widefat striped"><thead><tr><th>Publication</th><th>Chapters</th></tr></thead><tbody>'+rows.join('')+'</tbody></table></div>';
           }
           form.addEventListener('change',update);form.addEventListener('input',update);update();
         })();
@@ -180,8 +200,14 @@ class Beryll_Chapter_Uploader {
         if ( 'cancel' === $policy && $duplicate_count ) { $this->redirect_error( 'Duplicates were found. Nothing was imported. Choose Replace or Skip, or review the chapter list.' ); }
         if ( empty( $work ) ) { $this->redirect_error( 'All selected chapters were skipped because they already exist. Nothing was imported.' ); }
         $all_drafts = ! empty( $_POST['all_drafts'] );
-        $immediate_count = $all_drafts ? 0 : max( 0, min( count( $work ), isset( $_POST['immediate_count'] ) ? absint( $_POST['immediate_count'] ) : 0 ) );
-        $scheduled_count = $all_drafts ? 0 : count( $work ) - $immediate_count;
+        $vault_count = $all_drafts ? 0 : max( 0, absint( $_POST['vault_count'] ?? 0 ) );
+        $treasure_count = $all_drafts ? 0 : max( 0, absint( $_POST['treasure_count'] ?? 0 ) );
+        $public_count = $all_drafts ? 0 : max( 0, absint( $_POST['public_count'] ?? 0 ) );
+        if ( $vault_count + $treasure_count + $public_count > count( $work ) ) { $this->redirect_error( 'The Vault, Treasure, and Public counts cannot exceed the number of selected chapters.' ); }
+        $advance_count = $vault_count + $treasure_count;
+        $remaining_count = count( $work ) - $advance_count - $public_count;
+        $immediate_count = $all_drafts ? 0 : max( 0, min( $remaining_count, isset( $_POST['immediate_count'] ) ? absint( $_POST['immediate_count'] ) : 0 ) );
+        $scheduled_count = $all_drafts ? 0 : $remaining_count - $immediate_count;
         $days = isset( $_POST['days'] ) && is_array( $_POST['days'] ) ? array_values( array_unique( array_map( 'absint', wp_unslash( $_POST['days'] ) ) ) ) : array();
         $days = array_values( array_intersect( $days, array( 1, 2, 3, 4, 5, 6, 7 ) ) ); sort( $days );
         $per_day = isset( $_POST['per_day'] ) ? max( 1, min( 50, absint( $_POST['per_day'] ) ) ) : 1;
@@ -208,7 +234,7 @@ class Beryll_Chapter_Uploader {
         $job_token = wp_generate_password( 28, false, false );
         $job = array(
             'user_id' => get_current_user_id(), 'story_id' => $story_id, 'chapters' => $data['chapters'], 'work' => $work,
-            'all_drafts' => $all_drafts, 'immediate_count' => $immediate_count, 'schedule_slots' => $schedule_slots,
+            'all_drafts' => $all_drafts, 'vault_count' => $vault_count, 'treasure_count' => $treasure_count, 'public_count' => $public_count, 'immediate_count' => $immediate_count, 'schedule_slots' => $schedule_slots,
             'cursor' => 0, 'result' => array( 'published' => 0, 'scheduled' => 0, 'drafts' => 0, 'replaced' => 0, 'skipped' => count( $included ) - count( $work ), 'failed' => 0 ),
             'visible_ids' => array(), 'preview_token' => $token, 'job_token' => $job_token, 'complete' => false
         );
@@ -256,12 +282,19 @@ class Beryll_Chapter_Uploader {
         $total = count( $job['work'] ); $start = (int) $job['cursor']; $end = min( $total, $start + 5 );
         for ( $position = $start; $position < $end; $position++ ) {
             $item = $job['work'][$position]; $chapter = $job['chapters'][$item['index']];
-            if ( ! empty( $job['all_drafts'] ) ) { $status = 'draft'; }
-            elseif ( $position < (int) $job['immediate_count'] ) { $status = 'publish'; }
-            else { $status = 'future'; }
+            $vault_end = (int) ( $job['vault_count'] ?? 0 );
+            $treasure_end = $vault_end + (int) ( $job['treasure_count'] ?? 0 );
+            $public_end = $treasure_end + (int) ( $job['public_count'] ?? 0 );
+            $normal_position = $position - $public_end;
+            if ( ! empty( $job['all_drafts'] ) ) { $status = 'draft'; $access = 'draft'; }
+            elseif ( $position < $vault_end ) { $status = 'publish'; $access = 'vault'; }
+            elseif ( $position < $treasure_end ) { $status = 'publish'; $access = 'treasure'; }
+            elseif ( $position < $public_end ) { $status = 'publish'; $access = 'public'; }
+            elseif ( $normal_position < (int) $job['immediate_count'] ) { $status = 'publish'; $access = 'public'; }
+            else { $status = 'future'; $access = 'scheduled'; }
             $postarr = array( 'post_type' => 'fcn_chapter', 'post_status' => $status, 'post_title' => $item['title'], 'post_content' => wp_kses_post( $chapter['content'] ), 'post_author' => (int) $job['user_id'], 'post_parent' => (int) $job['story_id'] );
             if ( 'future' === $status ) {
-                $slot_index = $position - (int) $job['immediate_count']; $slot = $job['schedule_slots'][$slot_index];
+                $slot_index = $normal_position - (int) $job['immediate_count']; $slot = $job['schedule_slots'][$slot_index];
                 $postarr['post_date'] = $slot; $postarr['post_date_gmt'] = get_gmt_from_date( $slot );
             } elseif ( 'publish' === $status ) { $postarr['post_date'] = current_time( 'mysql' ); $postarr['post_date_gmt'] = current_time( 'mysql', true ); }
             $import_ref = $job['job_token'] . '-' . $position;
@@ -276,6 +309,20 @@ class Beryll_Chapter_Uploader {
             update_post_meta( $post_id, 'fictioneer_chapter_story', (string) $job['story_id'] );
             if ( isset( $item['group'] ) && '' !== trim( $item['group'] ) ) { update_post_meta( $post_id, 'fictioneer_chapter_group', $item['group'] ); } else { delete_post_meta( $post_id, 'fictioneer_chapter_group' ); }
             if ( function_exists( 'fictioneer_set_chapter_story_parent' ) ) { fictioneer_set_chapter_story_parent( $post_id, $job['story_id'] ); }
+            if ( in_array( $access, array( 'vault', 'treasure' ), true ) ) {
+                $tier_ids = ( 'vault' === $access ) ? array( '30102477' ) : array( '30102461', '30102477' );
+                $lock_password = wp_generate_password( 24, false, false );
+                wp_update_post( array( 'ID' => $post_id, 'post_password' => $lock_password ) );
+                update_post_meta( $post_id, 'fictioneer_patreon_lock_tiers', $tier_ids );
+                update_post_meta( $post_id, 'fictioneer_patreon_lock_amount', 0 );
+                update_post_meta( $post_id, 'fictioneer_chapter_password_note', ( 'vault' === $access ) ? 'This is an advance chapter available to Beryll Vault members. Join Beryll Vault to read it, or check back when it is released to lower tiers.' : 'This is an advance chapter available to Beryll Treasure and Beryll Vault members. Join either tier to read it, or check back when it is released publicly.' );
+                update_post_meta( $post_id, '_bcu_access_level', $access );
+                update_post_meta( $post_id, '_bcu_password_set', '1' );
+                update_post_meta( $post_id, '_bcu_discord_public_notified', '0' );
+            } else {
+                delete_post_meta( $post_id, '_bcu_access_level' );
+                if ( 'public' === $access ) { wp_update_post( array( 'ID' => $post_id, 'post_password' => '' ) ); }
+            }
             if ( ! empty( $item['existing_id'] ) ) { $job['result']['replaced']++; }
             if ( 'publish' === $status ) { $job['result']['published']++; $job['visible_ids'][] = (string) $post_id; }
             elseif ( 'future' === $status ) { $job['result']['scheduled']++; $job['visible_ids'][] = (string) $post_id; }
@@ -510,6 +557,126 @@ class Beryll_Chapter_Uploader {
     }
 }
 new Beryll_Chapter_Uploader();
+
+/**
+ * Patreon advance-release queue. Uses the WordPress site timezone and promotes both
+ * access queues in the same run. WP-Cron is traffic-driven, so the hourly check may run late.
+ */
+class Beryll_Patreon_Release_Scheduler {
+    const OPTION = 'bcu_patreon_scheduler';
+    const HOOK = 'bcu_patreon_release_tick';
+    const VAULT_TIER = '30102477';
+    const TREASURE_TIER = '30102461';
+
+    public function __construct() {
+        add_action( 'init', array( $this, 'ensure_cron' ) );
+        add_action( self::HOOK, array( $this, 'tick' ) );
+        add_action( 'admin_post_bcu_save_patreon_schedule', array( $this, 'save' ) );
+    }
+
+    public function ensure_cron() {
+        if ( ! wp_next_scheduled( self::HOOK ) ) { wp_schedule_event( time() + 300, 'hourly', self::HOOK ); }
+    }
+
+    public function render_patreon_scheduler() {
+        if ( ! current_user_can( 'manage_options' ) ) { return; }
+        $s = get_option( self::OPTION, array() );
+        $days = isset( $s['days'] ) ? (array) $s['days'] : array( 1, 3 );
+        $per = isset( $s['per_release'] ) ? absint( $s['per_release'] ) : 1;
+        $time = isset( $s['time'] ) ? $s['time'] : '19:00';
+        $enabled = ! empty( $s['enabled'] );
+        $next = $this->next_release( $s );
+        echo '<div class="wrap"><h1>Patreon Release Scheduler</h1>';
+        echo '<p>At each selected release time, the scheduler promotes the oldest Vault-exclusive chapters to Treasure + Vault, and simultaneously promotes the oldest Treasure + Vault chapters to Public. It never moves newly uploaded chapters into Vault by itself.</p>';
+        echo '<div class="notice notice-warning"><p><strong>WP-Cron note:</strong> WordPress runs scheduled tasks when the site receives visits. Releases can happen later than the selected time on a low-traffic site. This page checks the schedule hourly.</p></div>';
+        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="max-width:700px;background:#fff;padding:18px;border:1px solid #ccd0d4"><input type="hidden" name="action" value="bcu_save_patreon_schedule">';
+        wp_nonce_field( 'bcu_save_patreon_schedule' );
+        echo '<p><label><input type="checkbox" name="enabled" value="1" ' . checked( $enabled, true, false ) . '> <strong>Enable automatic Patreon releases</strong></label></p><p><strong>Release days</strong><br>';
+        $labels = array( 1=>'Monday',2=>'Tuesday',3=>'Wednesday',4=>'Thursday',5=>'Friday',6=>'Saturday',7=>'Sunday' );
+        foreach ( $labels as $n=>$label ) { echo '<label style="display:inline-block;margin:0 12px 8px 0"><input type="checkbox" name="days[]" value="' . $n . '" ' . checked( in_array( $n, $days, true ), true, false ) . '> ' . esc_html( $label ) . '</label>'; }
+        echo '</p><p><label>Chapters per tier, per release<br><input type="number" name="per_release" min="1" max="50" value="' . esc_attr( max( 1, min( 50, $per ) ) ) . '" style="width:90px"></label></p>';
+        echo '<p><label>Release time (WordPress site timezone)<br><input type="time" name="time" value="' . esc_attr( $time ) . '"></label></p>';
+        echo '<p><strong>Next scheduled release:</strong> ' . ( $next ? esc_html( $next->format( 'D, j M Y H:i' ) ) : 'Not scheduled' ) . '</p>';
+        echo '<p><button class="button button-primary">Save scheduler settings</button></p></form>';
+        echo '<h2>Current advance queue</h2>';
+        $vault = $this->queue_count( 'vault' ); $treasure = $this->queue_count( 'treasure' );
+        echo '<p>Vault exclusive: <strong>' . absint( $vault ) . '</strong> chapters &nbsp; | &nbsp; Treasure + Vault: <strong>' . absint( $treasure ) . '</strong> chapters</p>';
+        echo '<p>Volume grouping remains separate from access level. The uploader continues to use Fictioneer’s chapter volume/group metadata for volume navigation.</p></div>';
+    }
+
+    public function save() {
+        if ( ! current_user_can( 'manage_options' ) ) { wp_die( 'Permission denied.' ); }
+        check_admin_referer( 'bcu_save_patreon_schedule' );
+        $days = isset( $_POST['days'] ) && is_array( $_POST['days'] ) ? array_map( 'absint', wp_unslash( $_POST['days'] ) ) : array();
+        $days = array_values( array_unique( array_intersect( $days, array(1,2,3,4,5,6,7) ) ) ); sort( $days );
+        $time = isset( $_POST['time'] ) ? sanitize_text_field( wp_unslash( $_POST['time'] ) ) : '19:00';
+        if ( ! preg_match( '/^([01]\d|2[0-3]):[0-5]\d$/', $time ) ) { $time = '19:00'; }
+        $s = array( 'enabled' => ! empty( $_POST['enabled'] ), 'days' => $days, 'per_release' => max( 1, min( 50, absint( $_POST['per_release'] ?? 1 ) ) ), 'time' => $time );
+        update_option( self::OPTION, $s, false );
+        wp_safe_redirect( admin_url( 'admin.php?page=bcu-patreon-scheduler&saved=1' ) ); exit;
+    }
+
+    private function next_release( $s ) {
+        if ( empty( $s['enabled'] ) || empty( $s['days'] ) ) { return false; }
+        $now = current_datetime(); $time = isset( $s['time'] ) ? $s['time'] : '19:00';
+        for ( $i = 0; $i < 8; $i++ ) {
+            $d = $now->modify( '+' . $i . ' days' );
+            if ( in_array( (int) $d->format('N'), (array) $s['days'], true ) ) {
+                $parts = explode(':', $time ); $candidate = $d->setTime( (int) $parts[0], (int) $parts[1], 0 );
+                if ( $candidate > $now ) { return $candidate; }
+            }
+        }
+        return false;
+    }
+
+    public function tick() {
+        $s = get_option( self::OPTION, array() );
+        if ( empty( $s['enabled'] ) || empty( $s['days'] ) ) { return; }
+        $now = current_datetime(); $today = (int) $now->format('N'); $time = isset( $s['time'] ) ? $s['time'] : '19:00';
+        if ( ! in_array( $today, (array) $s['days'], true ) || $now->format('H:i') < $time ) { return; }
+        $date_key = 'bcu_patreon_last_release_date';
+        if ( get_option( $date_key ) === $now->format('Y-m-d') ) { return; }
+        if ( get_transient( 'bcu_patreon_release_lock' ) ) { return; }
+        set_transient( 'bcu_patreon_release_lock', 1, 15 * MINUTE_IN_SECONDS );
+        $limit = max( 1, min( 50, absint( $s['per_release'] ?? 1 ) ) );
+        // Fetch both queues before changing either, ensuring both transitions are simultaneous.
+        $vault_ids = $this->queue_ids( 'vault', $limit );
+        $treasure_ids = $this->queue_ids( 'treasure', $limit );
+        foreach ( $vault_ids as $id ) { $this->promote_to_treasure( $id ); }
+        foreach ( $treasure_ids as $id ) { $this->promote_to_public( $id ); }
+        update_option( $date_key, $now->format('Y-m-d'), false );
+        delete_transient( 'bcu_patreon_release_lock' );
+    }
+
+    private function queue_ids( $level, $limit ) {
+        $q = new WP_Query( array( 'post_type'=>'fcn_chapter', 'post_status'=>'publish', 'posts_per_page'=>$limit, 'fields'=>'ids', 'orderby'=>'date', 'order'=>'ASC', 'meta_key'=>'_bcu_access_level', 'meta_value'=>$level, 'no_found_rows'=>true ) );
+        return array_map( 'absint', $q->posts );
+    }
+
+    private function queue_count( $level ) {
+        $q = new WP_Query( array( 'post_type'=>'fcn_chapter', 'post_status'=>'publish', 'posts_per_page'=>1, 'fields'=>'ids', 'meta_key'=>'_bcu_access_level', 'meta_value'=>$level ) );
+        return (int) $q->found_posts;
+    }
+
+    private function promote_to_treasure( $id ) {
+        update_post_meta( $id, '_bcu_access_level', 'treasure' );
+        update_post_meta( $id, 'fictioneer_patreon_lock_tiers', array( self::TREASURE_TIER, self::VAULT_TIER ) );
+        update_post_meta( $id, 'fictioneer_chapter_password_note', 'This is an advance chapter available to Beryll Treasure and Beryll Vault members. Join either tier to read it, or check back when it is released publicly.' );
+    }
+
+    private function promote_to_public( $id ) {
+        wp_update_post( array( 'ID'=>$id, 'post_password'=>'' ) );
+        delete_post_meta( $id, 'fictioneer_patreon_lock_tiers' );
+        delete_post_meta( $id, 'fictioneer_patreon_lock_amount' );
+        delete_post_meta( $id, 'fictioneer_chapter_password_note' );
+        delete_post_meta( $id, 'fictioneer_expire_post_password' );
+        delete_post_meta( $id, '_bcu_password_set' );
+        update_post_meta( $id, '_bcu_access_level', 'public' );
+        // Discord notification is intentionally not fired here until the site's webhook
+        // configuration and Fictioneer public-release callback are verified.
+    }
+}
+new Beryll_Patreon_Release_Scheduler();
 
 /**
  * Lightweight GitHub-based updater for Beryll Chapter Uploader.

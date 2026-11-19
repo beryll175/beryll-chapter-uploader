@@ -1,8 +1,8 @@
 {
-  "version": "2.3.1",
+  "version": "2.4.0",
   "package": "https://github.com/beryll175/beryll-chapter-uploader/archive/refs/heads/main.zip",
   "requires": "6.0",
   "requires_php": "7.4",
-  "tested": "7.0",
-  "changelog": "<h4>2.3.0</h4><ul><li>Added automatic update checks through the public Beryll TL GitHub repository.</li><li>Added WordPress update notifications and the standard Update Now workflow.</li><li>Added plugin information and changelog details to the WordPress Plugins screen.</li><li>Added safe package-folder handling for GitHub archive downloads.</li></ul><p>All existing chapter upload, volume, duplicate detection, and scheduling features are retained.</p>"
+  "tested": "6.8",
+  "changelog": "Added batch access distribution for Vault-exclusive, Treasure + Vault, and Public chapters. Added a weekly Patreon release scheduler with simultaneous tier promotions. Preserved the ZIP/EPUB importer, duplicate handling, and Fictioneer volume-group metadata."
 }
