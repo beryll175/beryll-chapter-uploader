@@ -184,6 +184,26 @@ function esc(s){
  }[c]));
 }
 
+ function formatMarkdown(s){
+
+ let text=esc(s);
+
+ // Bold
+ text=text.replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>");
+
+ // Italics
+ text=text.replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g,"<em>$1</em>");
+ text=text.replace(/(?<!_)_([^_\n]+?)_(?!_)/g,"<em>$1</em>");
+
+ // Strikethrough
+ text=text.replace(/~~(.+?)~~/g,"<del>$1</del>");
+
+ // Inline code
+ text=text.replace(/`([^`]+)`/g,"<code>$1</code>");
+
+ return text.replace(/\n/g,"<br/>");
+ }
+
 function filename(s){
  return String(s).replace(/[\\/:*?"<>|]/g,"")
  .replace(/\s+/g," ").trim().slice(0,100)||"Omni Export";
@@ -628,9 +648,9 @@ async function makeEPUB(list,title){
   const chapterTitle=r.title||"Record "+r.recordNumber;
 
   const body=(r.text||"[No translated text available.]")
-   .split(/\n\s*\n/)
-   .map(p=>"<p>"+esc(p).replace(/\n/g,"<br/>")+"</p>")
-   .join("");
+ .split(/\n\s*\n/)
+ .map(p=>"<p>"+formatMarkdown(p)+"</p>")
+ .join("");
 
   zip.file("OEBPS/"+fn,
    '<?xml version="1.0" encoding="UTF-8"?>'+
