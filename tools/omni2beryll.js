@@ -203,13 +203,19 @@ function openDB(){
  });
 }
 
-function save(r){
+function saveMany(list){
  return new Promise((resolve,reject)=>{
   const tx=db.transaction("records","readwrite");
-  tx.objectStore("records").put(r);
+  const store=tx.objectStore("records");
+  list.forEach(r=>store.put(r));
   tx.oncomplete=resolve;
   tx.onerror=()=>reject(tx.error);
+  tx.onabort=()=>reject(tx.error||Error("Database batch save failed."));
  });
+}
+
+function save(r){
+ return saveMany([r]);
 }
 
 function getAll(){
@@ -299,6 +305,7 @@ $("o2b-download").onchange=()=>{
 };
 
 /* SCAN CHAPTER LIST */
+/* SCAN CHAPTER LIST */
 
 $("o2b-scan").onclick=async()=>{
 
@@ -315,6 +322,9 @@ $("o2b-scan").onclick=async()=>{
   let id=firstId;
   let number=1;
   let found=0;
+  let pending=[];
+
+  status("Preparing fast scan...");
 
   while(id){
 
@@ -347,22 +357,29 @@ $("o2b-scan").onclick=async()=>{
     nextId:data.next?.id||null
    };
 
-   await save(record);
+   pending.push(record);
    byId.set(id,record);
-
    found++;
-
-   status(
-    "Scanning chapter list...\n"+
-    "Records discovered: "+number+
-    "\nNew records: "+found
-   );
 
    id=record.nextId;
    number++;
 
-   await new Promise(r=>setTimeout(r,250));
+   if(pending.length>=25){
+    await saveMany(pending);
+    pending=[];
+   }
+
+   if(found%10===0){
+    status(
+     "Fast scan in progress...\n"+
+     "Records discovered: "+number+
+     "\nNew records: "+found+
+     "\nSaved in batches of 25"
+    );
+   }
   }
+
+  if(pending.length)await saveMany(pending);
 
   await refreshCount();
   renderList();
@@ -371,7 +388,8 @@ $("o2b-scan").onclick=async()=>{
    " chapter records discovered.\nChoose your chapters and start scraping.");
 
  }catch(e){
-  status("Scan stopped: "+e.message);
+  status("Scan stopped: "+e.message+
+   "\nSaved batches are retained. Press SCAN again to resume.");
  }finally{
   scanning=false;
   $("o2b-scan").disabled=false;
