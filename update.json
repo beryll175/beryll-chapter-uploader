@@ -1,8 +1,8 @@
 {
-  "version": "2.5.3",
+  "version": "2.6.0",
   "package": "https://github.com/beryll175/beryll-chapter-uploader/archive/refs/heads/main.zip",
   "requires": "6.0",
   "requires_php": "7.4",
   "tested": "6.8",
-  "changelog": "Added Normal Scheduling and Patreon Scheduling modes; per-novel Patreon schedules, start dates and release history; chapter ordering by volume/group and chapter number; and corrected the Patreon Scheduler submenu callback."
+  "changelog": "Added grouped Discord notifications for new novels, normal published chapters, scheduled public releases, Patreon early access, and Treasure-to-Free promotions; added retry queues and per-novel notification locks; standardized chapter groups as Free, Beryll Treasure, and Beryll Vault; fixed the broken scheduler method boundary and added ZIP/EPUB expansion safeguards."
 }
