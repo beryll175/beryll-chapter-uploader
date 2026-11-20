@@ -2585,12 +2585,25 @@ class Beryll_Patreon_Release_Scheduler {
                 }
 
                 /*
-                 * Treasure + Vault chapters become public.
-                 */
-                foreach ( array_slice( $treasure, 0, $limit ) as $id ) {
+ * Treasure + Vault chapters become public.
+ */
+$released_to_free = array_slice( $treasure, 0, $limit );
 
-                    $this->promote_to_public( $id );
-                }
+foreach ( $released_to_free as $id ) {
+
+    $this->promote_to_public( $id );
+}
+
+/*
+ * Send one grouped public-release notification.
+ */
+if ( ! empty( $released_to_free ) ) {
+
+    $this->notify_chapter_batch(
+        $released_to_free,
+        'free'
+    );
+}
 
                 update_option(
                     'bcu_patreon_last_release_' . $story_id,
@@ -2871,11 +2884,7 @@ class Beryll_Patreon_Release_Scheduler {
         '1'
       );
 
-      /*
-       * Attempt notification immediately.
-       */
-      $this->notify_public_release( $id );
-    }
+      
 
         /**
      * Send one grouped chapter notification through GitHub Actions.
@@ -3382,29 +3391,53 @@ class Beryll_Patreon_Release_Scheduler {
 
 
     /**
-     * Retry previously failed public-release notifications.
-     */
-    private function process_pending_notifications() {
+ * Retry previously failed public-release notifications in groups.
+ */
+private function process_pending_notifications() {
 
-        $pending = get_posts( array(
-            'post_type'   => 'fcn_chapter',
-            'post_status' => 'publish',
-            'numberposts' => 50,
-            'fields'      => 'ids',
+    $pending = get_posts( array(
+        'post_type'   => 'fcn_chapter',
+        'post_status' => 'publish',
+        'numberposts' => 50,
+        'fields'      => 'ids',
 
-            'meta_query' => array(
-                array(
-                    'key'   => '_bcu_discord_public_release_pending',
-                    'value' => '1',
-                ),
+        'meta_query' => array(
+            array(
+                'key'   => '_bcu_discord_public_release_pending',
+                'value' => '1',
             ),
-        ) );
+        ),
+    ) );
 
-        foreach ( $pending as $id ) {
+    $groups = array();
 
-            $this->notify_public_release( $id );
+    /*
+     * Group pending chapters by novel.
+     */
+    foreach ( $pending as $id ) {
+
+        $story_id = function_exists( 'fictioneer_get_chapter_story_id' )
+            ? absint( fictioneer_get_chapter_story_id( $id ) )
+            : absint( get_post_meta( $id, 'fictioneer_chapter_story', true ) );
+
+        if ( ! $story_id ) {
+            continue;
         }
+
+        $groups[ $story_id ][] = $id;
     }
+
+    /*
+     * Retry each novel as one grouped notification.
+     */
+    foreach ( $groups as $chapter_ids ) {
+
+        $this->notify_chapter_batch(
+            $chapter_ids,
+            'free'
+        );
+    }
+}
 
 }
 
