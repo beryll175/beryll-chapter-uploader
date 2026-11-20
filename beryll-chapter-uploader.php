@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Beryll Chapter Uploader
  * Description: Import Fictioneer chapters from ZIP/DOCX or EPUB files, detect duplicates, publish immediately, and schedule by selected weekdays.
- * Version: 2.6.0
+ * Version: 2.7.0
  * Author: Beryll TL
  * Requires at least: 6.0
  * Requires PHP: 7.4
@@ -10,7 +10,7 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 class Beryll_Chapter_Uploader {
-    const VERSION = '2.6.0';
+    const VERSION = '2.7.0';
     const PAGE = 'beryll-chapter-uploader';
     const TRANSIENT_PREFIX = 'bcu_import_';
 
@@ -323,6 +323,7 @@ class Beryll_Chapter_Uploader {
         $chapters = ( 'zip' === $ext ) ? $this->parse_docx_zip( $_FILES['bcu_file']['tmp_name'] ) : $this->parse_epub( $_FILES['bcu_file']['tmp_name'] );
         if ( is_wp_error( $chapters ) ) { $this->redirect_error( $chapters->get_error_message() ); }
         if ( empty( $chapters ) ) { $this->redirect_error( 'No chapters were detected in that file.' ); }
+        $chapters = $this->sort_chapters_numerically( $chapters );
         if ( count( $chapters ) > $this->max_chapters() ) { $this->redirect_error( 'This file contains ' . count( $chapters ) . ' detected chapters. Your current upload limit is ' . $this->max_chapters() . '. Increase the limit (up to 200) or split the file into smaller uploads.' ); }
         $token = wp_generate_password( 24, false, false );
         set_transient( self::TRANSIENT_PREFIX . $token, array( 'story_id' => $story_id, 'chapters' => $chapters, 'user_id' => get_current_user_id() ), HOUR_IN_SECONDS );
@@ -1732,9 +1733,52 @@ class Beryll_Chapter_Uploader {
 
     private function chapter_number( $title, $fallback = 0 ) {
         $title = html_entity_decode( wp_strip_all_tags( (string) $title ), ENT_QUOTES, 'UTF-8' );
-        if ( preg_match( '/(?:chapter|chap\.?|ch\.?|第)\s*0*(\d+)/iu', $title, $m ) ) { return (int) $m[1]; }
+        if ( preg_match( '/(?:chapter|chap\.?|ch\.?|c\.?|第)\s*0*(\d+)/iu', $title, $m ) ) { return (int) $m[1]; }
         if ( preg_match( '/^\s*0*(\d+)(?:\D|$)/u', $title, $m ) ) { return (int) $m[1]; }
         return (int) $fallback;
+    }
+
+    /** Extract and standardise a chapter label from source title and EPUB volume context. */
+    private function standard_chapter_title( $source_title, $volume_context = '', $fallback = 0 ) {
+        $source_title = html_entity_decode( wp_strip_all_tags( (string) $source_title ), ENT_QUOTES, 'UTF-8' );
+        $volume_context = html_entity_decode( wp_strip_all_tags( (string) $volume_context ), ENT_QUOTES, 'UTF-8' );
+        $volume = 0;
+        if ( preg_match( '/\b(?:volume|vol\.?|v)\s*0*(\d+)/iu', $source_title, $vm ) ) {
+            $volume = (int) $vm[1];
+        } elseif ( preg_match( '/\b(?:volume|vol\.?|v)\s*0*(\d+)/iu', $volume_context, $vm ) ) {
+            $volume = (int) $vm[1];
+        }
+        $number = $this->chapter_number( $source_title, $fallback );
+        if ( $number < 1 ) { $number = max( 1, (int) $fallback ); }
+        return array(
+            'number' => $number,
+            'volume' => $volume,
+            'title'  => ( $volume > 0 ? 'Vol. ' . $volume . ' ' : '' ) . 'Chapter ' . $number,
+        );
+    }
+
+    /** Sort parsed chapters by volume, then numeric chapter number. */
+    private function sort_chapters_numerically( $chapters ) {
+        foreach ( $chapters as $index => &$chapter ) {
+            $parts = $this->standard_chapter_title( $chapter['title'], $chapter['group'] ?? '', $index + 1 );
+            $chapter['title'] = $parts['title'];
+            $chapter['_bcu_volume_number'] = $parts['volume'];
+            $chapter['_bcu_chapter_number'] = $parts['number'];
+            $chapter['_bcu_source_order'] = $index;
+        }
+        unset( $chapter );
+        usort( $chapters, function( $a, $b ) {
+            $volume_compare = (int) $a['_bcu_volume_number'] <=> (int) $b['_bcu_volume_number'];
+            if ( 0 !== $volume_compare ) { return $volume_compare; }
+            $chapter_compare = (int) $a['_bcu_chapter_number'] <=> (int) $b['_bcu_chapter_number'];
+            if ( 0 !== $chapter_compare ) { return $chapter_compare; }
+            return (int) $a['_bcu_source_order'] <=> (int) $b['_bcu_source_order'];
+        } );
+        foreach ( $chapters as &$chapter ) {
+            unset( $chapter['_bcu_volume_number'], $chapter['_bcu_chapter_number'], $chapter['_bcu_source_order'] );
+        }
+        unset( $chapter );
+        return array_values( $chapters );
     }
 
     private function duplicate_key( $group, $number ) {
@@ -1979,10 +2023,29 @@ class Beryll_Chapter_Uploader {
             $xd = new DOMDocument(); if ( ! @$xd->loadXML( $xhtml, LIBXML_NONET ) ) { continue; }
             $xx = new DOMXPath( $xd ); $xx->registerNamespace( 'h', 'http://www.w3.org/1999/xhtml' );
             $title_node = $xx->query( '//h:h1 | //h:h2 | //h:title | //h:head/title' )->item( 0 );
-            $title = $title_node ? trim( $title_node->textContent ) : pathinfo( $href, PATHINFO_FILENAME );
+            $document_title = $title_node ? trim( $title_node->textContent ) : pathinfo( $href, PATHINFO_FILENAME );
             $href_basename = basename( strtok( $href, '#' ) );
-            if ( isset( $nav_titles[$href_basename] ) ) { $title = $nav_titles[$href_basename]; }
+            $title = isset( $nav_titles[$href_basename] ) ? $nav_titles[$href_basename] : $document_title;
             $body = $xx->query( '//h:body' )->item( 0 ); if ( ! $body ) { continue; }
+
+            // Remove the chapter heading from the body so it is not repeated inside the imported chapter.
+            if ( $title_node && $body->isSameNode( $title_node->parentNode ) ) {
+                $title_node->parentNode->removeChild( $title_node );
+            } else {
+                $body_headings = $xx->query( './/h:h1 | .//h:h2', $body );
+                if ( $body_headings->length ) {
+                    $first_heading = $body_headings->item( 0 );
+                    $heading_text = trim( $first_heading->textContent );
+                    $title_key = preg_replace( '/[^a-z0-9]+/i', '', strtolower( $title ) );
+                    $heading_key = preg_replace( '/[^a-z0-9]+/i', '', strtolower( $heading_text ) );
+                    $title_number = $this->chapter_number( $title, 0 );
+                    $heading_number = $this->chapter_number( $heading_text, 0 );
+                    if ( $heading_key === $title_key || ( $title_number > 0 && $heading_number === $title_number ) ) {
+                        $first_heading->parentNode->removeChild( $first_heading );
+                    }
+                }
+            }
+
             $html = ''; foreach ( $body->childNodes as $child ) { $html .= $xd->saveHTML( $child ); }
             $html = preg_replace( '/<script\b[^>]*>.*?<\/script>/is', '', $html );
             if ( trim( wp_strip_all_tags( $html ) ) === '' ) { continue; }
@@ -2032,8 +2095,8 @@ class Beryll_Chapter_Uploader {
                 $direct = $x->query( './h:a[@href]', $li )->item( 0 );
                 if ( ! $direct ) { continue; }
                 $label = trim( $direct->textContent );
-                if ( ! preg_match( '/^(?:volume|vol\.?|book)\s*[-_ ]*\d+/iu', $label ) ) { continue; }
-                $group = preg_replace( '/^(?:vol\.?)/iu', 'Volume', $label );
+                if ( ! preg_match( '/^(?:volume|vol\.?|v|book)\s*[-_ ]*\d+/iu', $label ) ) { continue; }
+                $group = preg_replace( '/^(?:vol\.?|v)\s*/iu', 'Volume ', $label );
                 foreach ( $x->query( './/h:li//h:a[@href]', $li ) as $child_link ) {
                     $target = basename( strtok( $child_link->getAttribute( 'href' ), '#' ) );
                     if ( $target ) { $map[$target] = trim( $group ); }

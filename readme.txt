@@ -2,9 +2,18 @@
 Contributors: berylltl
 Requires at least: 6.0
 Requires PHP: 7.4
-Stable tag: 2.6.0
+Stable tag: 2.7.0
 
 Import Fictioneer chapters from ZIP/DOCX or EPUB files, detect duplicates, and publish or schedule chapters using normal or Patreon release modes. Discord notifications are relayed through GitHub Actions.
+
+== Changelog ==
+
+= 2.7.0 =
+* Standardize imported chapter titles as Chapter N or Vol. N Chapter N.
+* Extract chapter numbers from DOCX filenames and EPUB table-of-contents entries.
+* Sort the upload preview numerically by volume and chapter number.
+* Use EPUB table-of-contents volume headings when formatting chapter titles.
+* Remove the repeated chapter heading from EPUB chapter content when it matches the chapter title.
 
 == Features ==
 * Import one DOCX per chapter from a ZIP archive.

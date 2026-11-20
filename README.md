@@ -2,6 +2,13 @@
 
 WordPress plugin for importing chapters into Fictioneer novels, assigning Patreon access levels, scheduling releases, and sending Discord announcements through GitHub Actions.
 
+## What changed in 2.7.0
+
+- DOCX and EPUB chapter numbers are extracted and previews are sorted numerically.
+- Imported titles are standardized as `Chapter N` or `Vol. N Chapter N`.
+- EPUB volume headings in the table of contents are used to build volume-aware chapter titles.
+- The repeated chapter heading is removed from EPUB chapter content when it matches the title.
+
 ## What changed in 2.6.0
 
 - Chapter-list group labels are **Free**, **Beryll Treasure**, and **Beryll Vault**.
