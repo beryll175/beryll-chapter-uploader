@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Beryll Chapter Uploader
  * Description: Import Fictioneer chapters from ZIP/DOCX or EPUB files, detect duplicates, publish immediately, and schedule by selected weekdays.
- * Version: 2.5.1
+ * Version: 2.5.2
  * Author: Beryll TL
  * Requires at least: 6.0
  * Requires PHP: 7.4
@@ -10,7 +10,7 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 class Beryll_Chapter_Uploader {
-    const VERSION = '2.5.1';
+    const VERSION = '2.5.2';
     const PAGE = 'beryll-chapter-uploader';
     const TRANSIENT_PREFIX = 'bcu_import_';
 
