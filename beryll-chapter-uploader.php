@@ -20,6 +20,7 @@ class Beryll_Chapter_Uploader {
         add_action( 'admin_post_bcu_import', array( $this, 'handle_import' ) );
         add_action( 'admin_post_bcu_save_settings', array( $this, 'save_settings' ) );
         add_action( 'admin_post_bcu_save_github_settings', array( $this, 'save_github_settings' ) );
+        add_action( 'admin_post_bcu_test_github_relay', array( $this, 'test_github_relay' ) );
         add_action( 'wp_ajax_bcu_process_batch', array( $this, 'process_batch' ) );
     }
 
@@ -32,102 +33,159 @@ class Beryll_Chapter_Uploader {
         echo '<div class="notice notice-' . esc_attr( $type ) . '"><p>' . wp_kses_post( $message ) . '</p></div>';
     }
 
-    public function render() {
-        if ( ! current_user_can( 'manage_options' ) ) {
+   public function render() {
+    if ( ! current_user_can( 'manage_options' ) ) {
         return;
-        }
+    }
 
-        echo '<div class="wrap"><h1>Beryll Chapter Uploader <small style="font-size:13px;color:#777">v' . esc_html( self::VERSION ) . '</small></h1>';
+    echo '<div class="wrap"><h1>Beryll Chapter Uploader <small style="font-size:13px;color:#777">v' . esc_html( self::VERSION ) . '</small></h1>';
 
-        if ( isset( $_GET['bcu_saved'] ) ) {
+    /*
+     * General notices.
+     */
+    if ( isset( $_GET['bcu_saved'] ) ) {
         $this->notice( 'Upload limit saved.', 'success' );
-        }
+    }
 
-        if ( isset( $_GET['bcu_github_saved'] ) ) {
+    if ( isset( $_GET['bcu_github_saved'] ) ) {
         $this->notice( 'GitHub connection settings saved.', 'success' );
-        }
+    }
 
-     if ( isset( $_GET['bcu_github_removed'] ) ) {
+    if ( isset( $_GET['bcu_github_removed'] ) ) {
         $this->notice( 'GitHub access token removed.', 'success' );
-        }
+    }
 
-        if ( isset( $_GET['bcu_error'] ) ) {
-        $this->notice( sanitize_text_field( wp_unslash( $_GET['bcu_error'] ) ) );
-        }
-
-        if ( isset( $_GET['bcu_result'] ) ) {
-        $r = json_decode(
-            base64_decode( sanitize_text_field( wp_unslash( $_GET['bcu_result'] ) ) ),
-            true
+    if ( isset( $_GET['bcu_error'] ) ) {
+        $this->notice(
+            sanitize_text_field( wp_unslash( $_GET['bcu_error'] ) )
         );
+    }
+
+    /*
+     * GitHub relay test results.
+     */
+    if ( isset( $_GET['bcu_github_test'] ) ) {
+        $test_result = sanitize_key( wp_unslash( $_GET['bcu_github_test'] ) );
+
+        if ( 'success' === $test_result ) {
+            $this->notice(
+                'GitHub accepted the workflow dispatch. Check your Discord channel for the test notification.',
+                'success'
+            );
+        } elseif ( 'no_token' === $test_result ) {
+            $this->notice(
+                'No GitHub token is saved. Please save your token first.',
+                'error'
+            );
+        } elseif ( 'connection_error' === $test_result ) {
+            $this->notice(
+                'WordPress could not connect to GitHub. Check your hosting connection.',
+                'error'
+            );
+        } elseif ( 'api_error' === $test_result ) {
+            $this->notice(
+                'GitHub rejected the workflow request. Check your repository, workflow filename, and token permissions.',
+                'error'
+            );
+        }
+    }
+
+    /*
+     * Import result.
+     */
+    if ( isset( $_GET['bcu_result'] ) ) {
+        $encoded_result = sanitize_text_field( wp_unslash( $_GET['bcu_result'] ) );
+        $decoded_result = base64_decode( $encoded_result, true );
+        $r = false !== $decoded_result ? json_decode( $decoded_result, true ) : null;
 
         if ( is_array( $r ) ) {
             $this->notice(
                 sprintf(
                     'Import finished. %1$d published now, %2$d scheduled, %3$d saved as drafts, %4$d replaced, %5$d skipped, %6$d failed.',
-                    absint( $r['published'] ),
-                    absint( $r['scheduled'] ),
-                    absint( $r['drafts'] ),
-                    absint( $r['replaced'] ),
-                    absint( $r['skipped'] ),
-                    absint( $r['failed'] )
+                    absint( $r['published'] ?? 0 ),
+                    absint( $r['scheduled'] ?? 0 ),
+                    absint( $r['drafts'] ?? 0 ),
+                    absint( $r['replaced'] ?? 0 ),
+                    absint( $r['skipped'] ?? 0 ),
+                    absint( $r['failed'] ?? 0 )
                 ),
                 'success'
             );
         }
-       }
+    }
 
-        /*
-         * GitHub connection settings.
-          */
-        $github_username = get_option( 'bcu_github_username', 'beryll175' );
-        $github_repo     = get_option( 'bcu_github_repo', 'beryll-chapter-uploader' );
-        $github_workflow = get_option( 'bcu_github_workflow', 'discord-notify.yml' );
-        $github_token    = get_option( 'bcu_github_token', '' );
+    /*
+     * GitHub connection settings.
+     */
+    $github_username = get_option( 'bcu_github_username', 'beryll175' );
+    $github_repo     = get_option( 'bcu_github_repo', 'beryll-chapter-uploader' );
+    $github_workflow = get_option( 'bcu_github_workflow', 'discord-notify.yml' );
+    $github_token    = get_option( 'bcu_github_token', '' );
 
-        echo '<hr><h2>GitHub Discord Notification Relay</h2>';
-        echo '<p>Connect Beryll TL to GitHub Actions so your website can send Discord notifications without connecting directly to Discord.</p>';
+    echo '<hr><h2>GitHub Discord Notification Relay</h2>';
+    echo '<p>Connect Beryll TL to GitHub Actions so your website can send Discord notifications without connecting directly to Discord.</p>';
 
-        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="background:#fff;padding:20px;max-width:650px;border:1px solid #ccd0d4">';
+    /*
+     * Save GitHub settings form.
+     */
+    echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="background:#fff;padding:20px;max-width:650px;border:1px solid #ccd0d4">';
 
-        echo '<input type="hidden" name="action" value="bcu_save_github_settings">';
-        wp_nonce_field( 'bcu_save_github_settings' );
+    echo '<input type="hidden" name="action" value="bcu_save_github_settings">';
+    wp_nonce_field( 'bcu_save_github_settings' );
 
-        echo '<p><label><strong>GitHub username</strong><br>';
-        echo '<input type="text" name="bcu_github_username" value="' . esc_attr( $github_username ) . '" required style="width:100%;max-width:400px"></label></p>';
+    echo '<p><label><strong>GitHub username</strong><br>';
+    echo '<input type="text" name="bcu_github_username" value="' . esc_attr( $github_username ) . '" required style="width:100%;max-width:400px"></label></p>';
 
-        echo '<p><label><strong>Repository name</strong><br>';
-        echo '<input type="text" name="bcu_github_repo" value="' . esc_attr( $github_repo ) . '" required style="width:100%;max-width:400px"></label></p>';
+    echo '<p><label><strong>Repository name</strong><br>';
+    echo '<input type="text" name="bcu_github_repo" value="' . esc_attr( $github_repo ) . '" required style="width:100%;max-width:400px"></label></p>';
 
-        echo '<p><label><strong>Workflow filename</strong><br>';
-        echo '<input type="text" name="bcu_github_workflow" value="' . esc_attr( $github_workflow ) . '" required style="width:100%;max-width:400px"></label></p>';
+    echo '<p><label><strong>Workflow filename</strong><br>';
+    echo '<input type="text" name="bcu_github_workflow" value="' . esc_attr( $github_workflow ) . '" required style="width:100%;max-width:400px"></label></p>';
 
-        echo '<p><label><strong>GitHub access token</strong><br>';
-        echo '<input type="password" name="bcu_github_token" value="" autocomplete="new-password" placeholder="' . esc_attr( $github_token ? 'Token already saved. Leave blank to keep it.' : 'Paste your fine-grained token here' ) . '" style="width:100%;max-width:400px"></label></p>';
+    echo '<p><label><strong>GitHub access token</strong><br>';
+    echo '<input type="password" name="bcu_github_token" value="" autocomplete="new-password" placeholder="' . esc_attr( $github_token ? 'Token already saved. Leave blank to keep it.' : 'Paste your fine-grained token here' ) . '" style="width:100%;max-width:400px"></label></p>';
 
-        echo '<p class="description">Your token is not displayed after saving. Leave the field empty to keep the existing token.</p>';
+    echo '<p class="description">Your token is not displayed after saving. Leave the field empty to keep the existing token.</p>';
 
-        echo '<p><button type="submit" class="button button-primary">Save GitHub Settings</button></p>';
+    echo '<p><button type="submit" class="button button-primary">Save GitHub Settings</button></p>';
 
-        echo '</form>';
+    echo '</form>';
 
-        if ( $github_token ) {
+    /*
+     * Token status and removal.
+     */
+    if ( $github_token ) {
         echo '<p><strong>Connection token:</strong> <span style="color:green">Saved</span></p>';
 
         echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="margin-top:10px">';
         echo '<input type="hidden" name="action" value="bcu_save_github_settings">';
         echo '<input type="hidden" name="bcu_remove_github_token" value="1">';
         wp_nonce_field( 'bcu_save_github_settings' );
+
         echo '<button type="submit" class="button" onclick="return confirm(\'Remove the saved GitHub token?\')">Remove GitHub Token</button>';
         echo '</form>';
-        } else {
-        echo '<p><strong>Connection token:</strong> <span style="color:#b32d2e">Not configured</span></p>';
-        }
 
         /*
-        * Existing import progress.
-        */
-        if ( isset( $_GET['bcu_job'] ) ) {
+         * Test GitHub-to-Discord relay.
+         */
+        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="margin-top:12px">';
+        echo '<input type="hidden" name="action" value="bcu_test_github_relay">';
+        wp_nonce_field( 'bcu_test_github_relay' );
+
+        echo '<p><button type="submit" class="button button-secondary" onclick="return confirm(\'This will send a test notification to your Discord channel. Continue?\')">Send Discord Test Notification</button></p>';
+        echo '</form>';
+
+        echo '<p class="description">This sends a test notification through GitHub Actions. It does not publish or modify any chapters.</p>';
+
+    } else {
+        echo '<p><strong>Connection token:</strong> <span style="color:#b32d2e">Not configured</span></p>';
+        echo '<p class="description">Save your GitHub access token before testing the connection.</p>';
+    }
+
+    /*
+     * Existing import progress.
+     */
+    if ( isset( $_GET['bcu_job'] ) ) {
         $job_token = sanitize_text_field( wp_unslash( $_GET['bcu_job'] ) );
         $job = get_transient( 'bcu_job_' . $job_token );
 
@@ -138,9 +196,12 @@ class Beryll_Chapter_Uploader {
         }
 
         $this->notice( 'The import session expired. Please check your chapter list before starting another import.' );
-        }
+    }
 
-        if ( isset( $_GET['bcu_token'] ) ) {
+    /*
+     * Existing chapter preview.
+     */
+    if ( isset( $_GET['bcu_token'] ) ) {
         $token = sanitize_text_field( wp_unslash( $_GET['bcu_token'] ) );
         $data = get_transient( self::TRANSIENT_PREFIX . $token );
 
@@ -151,76 +212,104 @@ class Beryll_Chapter_Uploader {
         }
 
         $this->notice( 'Your preview expired. Please upload the file again.' );
-        }
+    }
 
-        if ( ! post_type_exists( 'fcn_chapter' ) || ! post_type_exists( 'fcn_story' ) ) {
+    /*
+     * Check Fictioneer.
+     */
+    if ( ! post_type_exists( 'fcn_chapter' ) || ! post_type_exists( 'fcn_story' ) ) {
         $this->notice( 'Fictioneer Stories and Chapters were not detected. Activate the Fictioneer theme before using this uploader.' );
         echo '</div>';
         return;
-        }
+    }
 
-        if ( ! class_exists( 'ZipArchive' ) ) {
+    /*
+     * Check ZIP support.
+     */
+    if ( ! class_exists( 'ZipArchive' ) ) {
         $this->notice( 'Your hosting PHP does not have the ZipArchive extension enabled. ZIP/DOCX/EPUB imports need it.' );
         echo '</div>';
         return;
-        }
+    }
 
-        $stories = get_posts( array(
+    /*
+     * Retrieve available novels.
+     */
+    $stories = get_posts( array(
         'post_type'   => 'fcn_story',
         'post_status' => array( 'publish', 'draft', 'private', 'pending' ),
         'numberposts' => -1,
         'orderby'     => 'title',
-        'order'       => 'ASC'
-        ) );
+        'order'       => 'ASC',
+    ) );
 
-        if ( empty( $stories ) ) {
+    if ( empty( $stories ) ) {
         $this->notice( 'Create a Fictioneer Story first, then return here to import its chapters.', 'warning' );
         echo '</div>';
         return;
-        }
-
-        echo '<p>Upload a ZIP containing one DOCX per chapter, or an EPUB. The uploader previews the chapters before importing them.</p>';
-
-        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" enctype="multipart/form-data" style="background:#fff;padding:20px;max-width:760px;border:1px solid #ccd0d4">';
-
-        echo '<input type="hidden" name="action" value="bcu_preview">';
-     wp_nonce_field( 'bcu_preview' );
-
-        echo '<p><label for="bcu_story"><strong>Novel</strong></label><br><select id="bcu_story" name="story_id" required style="min-width:100%;max-width:100%"><option value="">Select a novel</option>';
-
-        foreach ( $stories as $story ) {
-        echo '<option value="' . esc_attr( $story->ID ) . '">' . esc_html( $story->post_title ) . '</option>';
-            }
-
-        echo '</select></p>';
-        echo '<p><label for="bcu_file"><strong>Upload ZIP or EPUB</strong></label><br><input id="bcu_file" type="file" name="bcu_file" accept=".zip,.epub" required></p>';
-        echo '<p class="description">ZIP: one .docx file per chapter. Files inside folders and subfolders are supported. EPUB chapters are read in the book’s internal reading order.</p>';
-        echo '<p><button class="button button-primary">Upload and Preview</button></p></form>';
-
-        echo '<hr><h2>Upload limits</h2>';
-
-        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="background:#fff;padding:14px;max-width:500px;border:1px solid #ccd0d4">';
-        echo '<input type="hidden" name="action" value="bcu_save_settings">';
-        wp_nonce_field( 'bcu_save_settings' );
-
-        $max_chapters = $this->max_chapters();
-
-        echo '<label><strong>Maximum chapters per upload</strong><br><input type="number" name="bcu_max_chapters" min="1" max="200" value="' . esc_attr( $max_chapters ) . '" style="width:100px"> <span class="description">Choose between 1 and 200. Default: 100.</span></label>';
-        echo '<p class="description">Imports are processed automatically in groups of 5 chapters to reduce PHP timeouts. Maximum file size: 15 MB.</p>';
-        echo '<button class="button" type="submit">Save upload limit</button></form>';
-
-        echo '<hr><h2>What this uploader does</h2><ul style="list-style:disc;padding-left:22px">';
-        echo '<li>Preview and edit chapter titles before importing.</li>';
-        echo '<li>Choose how many chapters publish immediately; schedule the rest by weekday.</li>';
-        echo '<li>Detect duplicate chapter numbers within the same volume/group and replace or skip duplicates.</li>';
-        echo '<li>Optionally import the whole selected batch as drafts.</li>';
-        echo '<li>Process imports automatically in groups of five with a progress indicator.</li>';
-        echo '</ul>';
-
-        echo '<p><strong>Formatting:</strong> paragraphs, bold, italic, underline, headings, links, lists and blockquotes are preserved where available. Embedded images are not imported.</p>';
-
-        echo '</div>';
     }
+
+    /*
+     * Chapter upload form.
+     */
+    echo '<p>Upload a ZIP containing one DOCX per chapter, or an EPUB. The uploader previews the chapters before importing them.</p>';
+
+    echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" enctype="multipart/form-data" style="background:#fff;padding:20px;max-width:760px;border:1px solid #ccd0d4">';
+
+    echo '<input type="hidden" name="action" value="bcu_preview">';
+    wp_nonce_field( 'bcu_preview' );
+
+    echo '<p><label for="bcu_story"><strong>Novel</strong></label><br><select id="bcu_story" name="story_id" required style="min-width:100%;max-width:100%"><option value="">Select a novel</option>';
+
+    foreach ( $stories as $story ) {
+        echo '<option value="' . esc_attr( $story->ID ) . '">' . esc_html( $story->post_title ) . '</option>';
+    }
+
+    echo '</select></p>';
+
+    echo '<p><label for="bcu_file"><strong>Upload ZIP or EPUB</strong></label><br><input id="bcu_file" type="file" name="bcu_file" accept=".zip,.epub" required></p>';
+
+    echo '<p class="description">ZIP: one .docx file per chapter. Files inside folders and subfolders are supported. EPUB chapters are read in the book’s internal reading order.</p>';
+
+    echo '<p><button class="button button-primary">Upload and Preview</button></p>';
+    echo '</form>';
+
+    /*
+     * Upload limits.
+     */
+    echo '<hr><h2>Upload limits</h2>';
+
+    echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="background:#fff;padding:14px;max-width:500px;border:1px solid #ccd0d4">';
+
+    echo '<input type="hidden" name="action" value="bcu_save_settings">';
+    wp_nonce_field( 'bcu_save_settings' );
+
+    $max_chapters = $this->max_chapters();
+
+    echo '<label><strong>Maximum chapters per upload</strong><br><input type="number" name="bcu_max_chapters" min="1" max="200" value="' . esc_attr( $max_chapters ) . '" style="width:100px"> <span class="description">Choose between 1 and 200. Default: 100.</span></label>';
+
+    echo '<p class="description">Imports are processed automatically in groups of 5 chapters to reduce PHP timeouts. Maximum file size: 15 MB.</p>';
+
+    echo '<button class="button" type="submit">Save upload limit</button>';
+    echo '</form>';
+
+    /*
+     * Uploader features.
+     */
+    echo '<hr><h2>What this uploader does</h2><ul style="list-style:disc;padding-left:22px">';
+
+    echo '<li>Preview and edit chapter titles before importing.</li>';
+    echo '<li>Choose how many chapters publish immediately; schedule the rest by weekday.</li>';
+    echo '<li>Detect duplicate chapter numbers within the same volume/group and replace or skip duplicates.</li>';
+    echo '<li>Optionally import the whole selected batch as drafts.</li>';
+    echo '<li>Process imports automatically in groups of five with a progress indicator.</li>';
+
+    echo '</ul>';
+
+    echo '<p><strong>Formatting:</strong> paragraphs, bold, italic, underline, headings, links, lists and blockquotes are preserved where available. Embedded images are not imported.</p>';
+
+    echo '</div>';
+}
 
     public function handle_preview() {
         if ( ! current_user_can( 'manage_options' ) ) { wp_die( 'Permission denied.' ); }
@@ -507,7 +596,7 @@ class Beryll_Chapter_Uploader {
         $limit = max( 1, min( 200, $limit ) ); update_option( 'bcu_max_chapters', $limit, false );
         wp_safe_redirect( add_query_arg( array( 'page' => self::PAGE, 'bcu_saved' => '1' ), admin_url( 'admin.php' ) ) ); exit;
     }
-    
+
     public function save_github_settings() {
     if ( ! current_user_can( 'manage_options' ) ) {
         wp_die( 'Permission denied.' );
@@ -586,6 +675,72 @@ class Beryll_Chapter_Uploader {
     );
     exit;
     }
+
+    public function test_github_relay() {
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_die( 'You do not have permission to perform this action.' );
+    }
+
+    check_admin_referer( 'bcu_test_github_relay' );
+
+    $token    = get_option( 'bcu_github_token', '' );
+    $username = get_option( 'bcu_github_username', 'beryll175' );
+    $repo     = get_option( 'bcu_github_repo', 'beryll-chapter-uploader' );
+    $workflow = get_option( 'bcu_github_workflow', 'discord-notify.yml' );
+
+    if ( empty( $token ) ) {
+        wp_safe_redirect( add_query_arg( 'bcu_github_test', 'no_token', admin_url( 'admin.php?page=beryll-chapter-uploader' ) ) );
+        exit;
+    }
+
+    $url = sprintf(
+        'https://api.github.com/repos/%s/%s/actions/workflows/%s/dispatches',
+        rawurlencode( $username ),
+        rawurlencode( $repo ),
+        rawurlencode( $workflow )
+    );
+
+    $body = array(
+        'ref' => 'main',
+        'inputs' => array(
+            'type'        => 'chapter',
+            'title'       => 'WordPress Discord Relay Test',
+            'url'         => 'https://berylltl.com',
+            'story'       => 'Beryll TL',
+            'author'      => 'Beryll TL',
+            'description' => 'This is a test notification sent from the Beryll Chapter Uploader.',
+            'image_url'   => '',
+        ),
+    );
+
+    $response = wp_remote_post( $url, array(
+        'timeout' => 20,
+        'headers' => array(
+            'Accept'               => 'application/vnd.github+json',
+            'Authorization'        => 'Bearer ' . $token,
+            'X-GitHub-Api-Version' => '2022-11-28',
+            'User-Agent'           => 'Beryll-TL-WordPress-Relay',
+            'Content-Type'         => 'application/json',
+        ),
+        'body' => wp_json_encode( $body ),
+    ) );
+
+    if ( is_wp_error( $response ) ) {
+        wp_safe_redirect( add_query_arg( 'bcu_github_test', 'connection_error', admin_url( 'admin.php?page=beryll-chapter-uploader' ) ) );
+        exit;
+    }
+
+    $status = wp_remote_retrieve_response_code( $response );
+
+    if ( 204 === $status ) {
+        $result = 'success';
+    } else {
+        $result = 'api_error';
+    }
+
+    wp_safe_redirect( add_query_arg( 'bcu_github_test', $result, admin_url( 'admin.php?page=beryll-chapter-uploader' ) ) );
+    exit;
+}
 
     private function max_chapters() {
         return max( 1, min( 200, absint( get_option( 'bcu_max_chapters', 100 ) ) ) );
