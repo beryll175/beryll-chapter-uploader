@@ -2923,12 +2923,11 @@ class Beryll_Patreon_Release_Scheduler {
             $post = get_post( $id );
 
             if (
-                ! $post ||
-                'fcn_chapter' !== $post->post_type ||
-                'publish' !== $post->post_status ||
-                ! empty( $post->post_password )
-            ) {
-                continue;
+    ! $post ||
+    'fcn_chapter' !== $post->post_type ||
+    'publish' !== $post->post_status
+) {
+    continue;
             }
 
             $chapter_story_id = function_exists( 'fictioneer_get_chapter_story_id' )
@@ -2954,9 +2953,9 @@ class Beryll_Patreon_Release_Scheduler {
 
             if ( 'free' === $release_mode ) {
 
-                if ( 'public' !== $access_level ) {
-                    continue;
-                }
+                if ( 'public' !== $access_level || ! empty( $post->post_password ) ) {
+    continue;
+}
 
                 if ( get_post_meta( $id, '_bcu_discord_public_release_notified', true ) ) {
                     continue;
