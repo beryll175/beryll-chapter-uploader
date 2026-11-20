@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Beryll Chapter Uploader
  * Description: Import Fictioneer chapters from ZIP/DOCX or EPUB files, detect duplicates, publish immediately, and schedule by selected weekdays.
- * Version: 2.5.0
+ * Version: 2.5.1
  * Author: Beryll TL
  * Requires at least: 6.0
  * Requires PHP: 7.4
@@ -10,7 +10,7 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 class Beryll_Chapter_Uploader {
-    const VERSION = '2.5.0';
+    const VERSION = '2.5.1';
     const PAGE = 'beryll-chapter-uploader';
     const TRANSIENT_PREFIX = 'bcu_import_';
 
@@ -147,7 +147,7 @@ class Beryll_Chapter_Uploader {
             settings.style.opacity=allDrafts.checked?'0.45':'1'; settings.querySelectorAll('input').forEach(x=>x.disabled=allDrafts.checked);
             const selected=boxes();
             const policy=form.querySelector('input[name="duplicate_policy"]:checked').value;
-            const chapters=selected.filter(x=>!(policy==='skip' && x.closest('tr').querySelector('td:nth-child(5) strong'))).map(x=>({title:x.closest('tr').querySelector('input[type="text"]').value,number:x.closest('tr').children[1].textContent}));
+            const chapters=selected.filter(x=>!(policy==='skip' && x.closest('tr').querySelector('td:nth-child(6) strong'))).map(x=>({title:x.closest('tr').querySelector('input[type="text"]').value,number:x.closest('tr').children[1].textContent}));
             const count=chapters.length;
             const vault=mode==='patreon'?Math.max(0,+form.querySelector('[name="vault_count"]').value||0):0;
             const treasure=mode==='patreon'?Math.max(0,+form.querySelector('[name="treasure_count"]').value||0):0;
@@ -637,6 +637,7 @@ class Beryll_Patreon_Release_Scheduler {
     }
 
     public function tick() {
+    		$this->process_pending_notifications(); 
         if(get_transient('bcu_patreon_release_lock'))return;
         set_transient('bcu_patreon_release_lock',1,20*MINUTE_IN_SECONDS);
         $stories=get_posts(array('post_type'=>'fcn_story','post_status'=>array('publish','draft','private'),'numberposts'=>-1,'fields'=>'ids'));
@@ -667,7 +668,219 @@ class Beryll_Patreon_Release_Scheduler {
 
     private function promote_to_treasure($id){update_post_meta($id,'_bcu_access_level','treasure');update_post_meta($id,'fictioneer_patreon_lock_tiers',array(self::TREASURE_TIER,self::VAULT_TIER));update_post_meta($id,'fictioneer_chapter_password_note','This is an advance chapter available to Beryll Treasure and Beryll Vault members. Join either tier to read it, or check back when it is released publicly.');}
 
-    private function promote_to_public($id){wp_update_post(array('ID'=>$id,'post_password'=>''));delete_post_meta($id,'fictioneer_patreon_lock_tiers');delete_post_meta($id,'fictioneer_patreon_lock_amount');delete_post_meta($id,'fictioneer_chapter_password_note');delete_post_meta($id,'fictioneer_expire_post_password');delete_post_meta($id,'_bcu_password_set');update_post_meta($id,'_bcu_access_level','public');}
+    private function promote_to_public($id) {
+    // Remove the Patreon gate before announcing the chapter publicly.
+    wp_update_post(array(
+        'ID' => $id,
+        'post_password' => ''
+    ));
+
+    delete_post_meta($id, 'fictioneer_patreon_lock_tiers');
+    delete_post_meta($id, 'fictioneer_patreon_lock_amount');
+    delete_post_meta($id, 'fictioneer_chapter_password_note');
+    delete_post_meta($id, 'fictioneer_expire_post_password');
+    delete_post_meta($id, '_bcu_password_set');
+
+    update_post_meta($id, '_bcu_access_level', 'public');
+
+    // Mark this chapter for its public-release announcement.
+    update_post_meta($id, '_bcu_discord_public_release_pending', 1);
+
+    $this->notify_public_release($id);
+    }
+ /**
+ * Announce a Patreon chapter only when it becomes public.
+ * A database lock prevents simultaneous requests from sending duplicates.
+ */
+private function notify_public_release($id) {
+
+    $id = absint($id);
+
+    if (!$id) {
+        return;
+    }
+
+    // Check whether this chapter has already been announced.
+    if (get_post_meta($id, '_bcu_discord_public_release_notified', true)) {
+        delete_post_meta($id, '_bcu_discord_public_release_pending');
+        return;
+    }
+
+    // Acquire an atomic database lock for this chapter.
+    $lock_key = '_bcu_discord_notify_lock_' . $id;
+
+    if (!add_option($lock_key, time(), '', false)) {
+
+        // Recover a lock left behind by a crashed request.
+        $locked_at = (int) get_option($lock_key, 0);
+
+        if (!$locked_at || $locked_at >= time() - 300) {
+            return;
+        }
+
+        global $wpdb;
+
+$deleted = $wpdb->query(
+    $wpdb->prepare(
+        "DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
+        $lock_key,
+        maybe_serialize($locked_at)
+    )
+);
+
+if (!$deleted || !add_option($lock_key, time(), '', false)) {
+    return;
+}
+    }
+
+    try {
+
+        // Check again after acquiring the lock.
+        if (get_post_meta($id, '_bcu_discord_public_release_notified', true)) {
+            delete_post_meta($id, '_bcu_discord_public_release_pending');
+            return;
+        }
+
+        // Use the existing Fictioneer chapter webhook.
+        $webhook = get_option('fictioneer_discord_channel_chapters_webhook');
+
+        if (empty($webhook)) {
+            return;
+        }
+
+        $post = get_post($id);
+
+        if (!$post || $post->post_type !== 'fcn_chapter' || $post->post_status !== 'publish') {
+            return;
+        }
+
+        $story_id = function_exists('fictioneer_get_chapter_story_id')
+            ? fictioneer_get_chapter_story_id($id)
+            : absint(get_post_meta($id, 'fictioneer_chapter_story', true));
+
+        $title = html_entity_decode(get_the_title($post), ENT_QUOTES, 'UTF-8');
+
+        $story_title = $story_id
+            ? html_entity_decode(get_the_title($story_id), ENT_QUOTES, 'UTF-8')
+            : '';
+
+        $story_url = $story_id ? get_permalink($story_id) : '';
+
+        $content = $story_title && $story_url
+            ? sprintf(
+                'A new chapter is now free to read for [%s](%s)!',
+                $story_title,
+                $story_url
+            )
+            : 'A new chapter is now available to read for free!';
+
+        $message = array(
+            'content' => $content,
+            'embeds' => array(
+                array(
+                    'title' => $title,
+                    'url' => get_permalink($id),
+                    'color' => defined('FICTIONEER_DISCORD_EMBED_COLOR')
+                        ? FICTIONEER_DISCORD_EMBED_COLOR
+                        : 9692513,
+                    'author' => array(
+                        'name' => get_the_author_meta('display_name', $post->post_author),
+                        'icon_url' => get_avatar_url($post->post_author)
+                    ),
+                    'timestamp' => get_date_from_gmt($post->post_date_gmt, 'c')
+                )
+            )
+        );
+
+        $thumbnail_url = get_the_post_thumbnail_url($id, 'thumbnail');
+
+        if (empty($thumbnail_url) && $story_id) {
+            $thumbnail_url = get_the_post_thumbnail_url($story_id, 'thumbnail');
+        }
+
+        if (!empty($thumbnail_url)) {
+            $message['embeds'][0]['thumbnail'] = array(
+                'url' => $thumbnail_url
+            );
+        }
+
+        $message = apply_filters(
+            'fictioneer_filter_discord_chapter_message',
+            $message,
+            $post,
+            $story_id
+        );
+
+        $webhook = apply_filters(
+            'fictioneer_filter_discord_chapter_webhook',
+            $webhook,
+            $post,
+            $story_id
+        );
+
+        if (empty($webhook)) {
+            return;
+        }
+
+        $response = wp_remote_post(
+            $webhook,
+            array(
+                'timeout'     => 15,
+                'redirection' => 0,
+                'blocking'    => true,
+                'headers'     => array(
+                    'Content-Type' => 'application/json',
+                ),
+                'body' => wp_json_encode($message),
+            )
+        );
+
+        if (!is_wp_error($response)) {
+
+            $status_code = wp_remote_retrieve_response_code($response);
+
+            if ($status_code >= 200 && $status_code < 300) {
+
+                update_post_meta(
+                    $id,
+                    '_bcu_discord_public_release_notified',
+                    current_time('mysql')
+                );
+
+                delete_post_meta($id, '_bcu_discord_public_release_pending');
+            }
+        }
+
+    } finally {
+
+        // Always release the lock, including when an early return occurs.
+        delete_option($lock_key);
+    }
+}
+
+
+/**
+ * Retry announcements that failed previously.
+ */
+private function process_pending_notifications() {
+
+    $pending = get_posts(array(
+        'post_type' => 'fcn_chapter',
+        'post_status' => 'publish',
+        'numberposts' => 50,
+        'fields' => 'ids',
+        'meta_query' => array(
+            array(
+                'key' => '_bcu_discord_public_release_pending',
+                'value' => '1'
+            )
+        )
+    ));
+
+    foreach ($pending as $id) {
+        $this->notify_public_release($id);
+    }
+}
 }
 new Beryll_Patreon_Release_Scheduler();
 
