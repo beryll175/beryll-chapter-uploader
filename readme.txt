@@ -2,7 +2,7 @@
 Contributors: berylltl
 Requires at least: 6.0
 Requires PHP: 7.4
-Stable tag: 2.5.1
+Stable tag: 2.5.2
 
 Import Fictioneer chapters from ZIP/DOCX or EPUB files, detect duplicates and volume groups, and choose normal or Patreon release handling.
 
