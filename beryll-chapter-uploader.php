@@ -10,7 +10,7 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 class Beryll_Chapter_Uploader {
-    const VERSION = '2.5.1';
+    const VERSION = '2.5.4';
     const PAGE = 'beryll-chapter-uploader';
     const TRANSIENT_PREFIX = 'bcu_import_';
 
@@ -2877,6 +2877,239 @@ class Beryll_Patreon_Release_Scheduler {
       $this->notify_public_release( $id );
     }
 
+        /**
+     * Send one grouped chapter notification through GitHub Actions.
+     *
+     * $chapter_ids: chapter IDs belonging to one novel.
+     * $release_mode: either 'free' or 'early_access'.
+     */
+    private function notify_chapter_batch( $chapter_ids, $release_mode ) {
+
+        $chapter_ids = array_values(
+            array_unique(
+                array_filter(
+                    array_map( 'absint', (array) $chapter_ids )
+                )
+            )
+        );
+
+        if (
+            empty( $chapter_ids ) ||
+            ! in_array( $release_mode, array( 'free', 'early_access' ), true )
+        ) {
+            return false;
+        }
+
+        /*
+         * GitHub relay configuration.
+         */
+        $token = get_option( 'bcu_github_token', '' );
+        $username = get_option( 'bcu_github_username', 'beryll175' );
+        $repo = get_option( 'bcu_github_repo', 'beryll-chapter-uploader' );
+        $workflow = get_option( 'bcu_github_workflow', 'discord-notify.yml' );
+
+        if ( empty( $token ) || empty( $username ) || empty( $repo ) || empty( $workflow ) ) {
+            return false;
+        }
+
+        $chapters = array();
+        $story_id = 0;
+
+        /*
+         * Validate chapters and collect their links.
+         */
+        foreach ( $chapter_ids as $id ) {
+
+            $post = get_post( $id );
+
+            if (
+                ! $post ||
+                'fcn_chapter' !== $post->post_type ||
+                'publish' !== $post->post_status ||
+                ! empty( $post->post_password )
+            ) {
+                continue;
+            }
+
+            $chapter_story_id = function_exists( 'fictioneer_get_chapter_story_id' )
+                ? absint( fictioneer_get_chapter_story_id( $id ) )
+                : absint( get_post_meta( $id, 'fictioneer_chapter_story', true ) );
+
+            if ( ! $chapter_story_id ) {
+                continue;
+            }
+
+            if ( ! $story_id ) {
+                $story_id = $chapter_story_id;
+            }
+
+            /*
+             * Never combine chapters from different novels.
+             */
+            if ( $story_id !== $chapter_story_id ) {
+                continue;
+            }
+
+            $access_level = get_post_meta( $id, '_bcu_access_level', true );
+
+            if ( 'free' === $release_mode ) {
+
+                if ( 'public' !== $access_level ) {
+                    continue;
+                }
+
+                if ( get_post_meta( $id, '_bcu_discord_public_release_notified', true ) ) {
+                    continue;
+                }
+
+                $label = get_the_title( $id );
+
+            } else {
+
+                if ( ! in_array( $access_level, array( 'treasure', 'vault' ), true ) ) {
+                    continue;
+                }
+
+                if ( get_post_meta( $id, '_bcu_discord_early_access_notified', true ) ) {
+                    continue;
+                }
+
+                $label = get_the_title( $id );
+            }
+
+            $chapters[] = array(
+                'id'    => $id,
+                'label' => html_entity_decode( $label, ENT_QUOTES, 'UTF-8' ),
+                'url'   => get_permalink( $id ),
+            );
+        }
+
+        if ( empty( $chapters ) || ! $story_id ) {
+            return false;
+        }
+
+        /*
+         * Build the novel's chapter links.
+         */
+        $chapter_links = array();
+
+        foreach ( $chapters as $chapter ) {
+
+            $chapter_links[] = sprintf(
+                '[%s](%s)',
+                $chapter['label'],
+                $chapter['url']
+            );
+        }
+
+        $story_title = html_entity_decode(
+            get_the_title( $story_id ),
+            ENT_QUOTES,
+            'UTF-8'
+        );
+
+        $first_chapter_url = $chapters[0]['url'];
+
+        /*
+         * Use the novel cover.
+         */
+        $image_url = get_the_post_thumbnail_url( $story_id, 'thumbnail' );
+
+        /*
+         * Determine when early-access chapters become free.
+         */
+        $free_date = '';
+
+        if ( 'early_access' === $release_mode ) {
+
+            $schedule = $this->settings( $story_id );
+            $next_release = $this->next_release( $schedule );
+
+            $free_date = $next_release
+                ? $next_release->format( 'D j M Y \a\t H:i' )
+                : 'the next scheduled release';
+        }
+
+        /*
+         * Send the grouped notification.
+         */
+        $body = array(
+            'ref' => 'main',
+            'inputs' => array(
+                'type'        => 'chapter',
+                'title'       => $story_title,
+                'url'         => $first_chapter_url,
+                'story'       => $story_title,
+                'author'      => 'Beryll TL',
+                'description' => '',
+                'image_url'   => $image_url ? $image_url : '',
+                'release_mode' => $release_mode,
+                'chapters'     => implode( "\n", $chapter_links ),
+                'free_date'    => $free_date,
+            ),
+        );
+
+        $dispatch_url = sprintf(
+            'https://api.github.com/repos/%s/%s/actions/workflows/%s/dispatches',
+            rawurlencode( $username ),
+            rawurlencode( $repo ),
+            rawurlencode( $workflow )
+        );
+
+        $response = wp_remote_post(
+            $dispatch_url,
+            array(
+                'timeout'     => 20,
+                'redirection' => 0,
+                'blocking'    => true,
+                'headers'     => array(
+                    'Accept'               => 'application/vnd.github+json',
+                    'Authorization'        => 'Bearer ' . $token,
+                    'X-GitHub-Api-Version' => '2022-11-28',
+                    'User-Agent'           => 'Beryll-TL-WordPress-Relay',
+                    'Content-Type'         => 'application/json',
+                ),
+                'body' => wp_json_encode( $body ),
+            )
+        );
+
+        if (
+            is_wp_error( $response ) ||
+            204 !== (int) wp_remote_retrieve_response_code( $response )
+        ) {
+            return false;
+        }
+
+        /*
+         * Mark every chapter only after GitHub accepts the dispatch.
+         */
+        foreach ( $chapters as $chapter ) {
+
+            if ( 'free' === $release_mode ) {
+
+                update_post_meta(
+                    $chapter['id'],
+                    '_bcu_discord_public_release_notified',
+                    current_time( 'mysql' )
+                );
+
+                delete_post_meta(
+                    $chapter['id'],
+                    '_bcu_discord_public_release_pending'
+                );
+
+            } else {
+
+                update_post_meta(
+                    $chapter['id'],
+                    '_bcu_discord_early_access_notified',
+                    current_time( 'mysql' )
+                );
+            }
+        }
+
+        return true;
+    }
 
     /**
      * Send a public-release notification through GitHub Actions.
