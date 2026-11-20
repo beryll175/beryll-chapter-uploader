@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Beryll Chapter Uploader
  * Description: Import Fictioneer chapters from ZIP/DOCX or EPUB files, detect duplicates, publish immediately, and schedule by selected weekdays.
- * Version: 2.5.2
+ * Version: 2.5.3
  * Author: Beryll TL
  * Requires at least: 6.0
  * Requires PHP: 7.4
@@ -10,7 +10,7 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 class Beryll_Chapter_Uploader {
-    const VERSION = '2.5.2';
+    const VERSION = '2.5.1';
     const PAGE = 'beryll-chapter-uploader';
     const TRANSIENT_PREFIX = 'bcu_import_';
 
@@ -945,325 +945,1230 @@ class Beryll_Chapter_Uploader {
 new Beryll_Chapter_Uploader();
 
 /**
- * Patreon advance-release queue. Uses the WordPress site timezone and promotes both
- * access queues in the same run. WP-Cron is traffic-driven, so the hourly check may run late.
+ * Patreon advance-release queue.
+ *
+ * Uses the WordPress site timezone and promotes both access queues
+ * in the same release cycle.
+ *
+ * Public-release notifications are sent through GitHub Actions
+ * because the hosting provider blocks direct Discord webhook requests.
  */
 class Beryll_Patreon_Release_Scheduler {
+
     const HOOK = 'bcu_patreon_release_tick';
+
     const VAULT_TIER = '30102477';
     const TREASURE_TIER = '30102461';
+
     const OPTION_PREFIX = 'bcu_patreon_story_';
 
+    const LOCK_TTL = 20 * MINUTE_IN_SECONDS;
+
     public function __construct() {
+
         add_action( 'init', array( $this, 'ensure_cron' ) );
+
         add_action( self::HOOK, array( $this, 'tick' ) );
-        add_action( 'admin_post_bcu_save_patreon_schedule', array( $this, 'save' ) );
+
+        add_action(
+            'admin_post_bcu_save_patreon_schedule',
+            array( $this, 'save' )
+        );
     }
 
+
+    /**
+     * Ensure the hourly scheduler event exists.
+     */
     public function ensure_cron() {
-        if ( ! wp_next_scheduled( self::HOOK ) ) { wp_schedule_event( time() + 300, 'hourly', self::HOOK ); }
+
+        if ( ! wp_next_scheduled( self::HOOK ) ) {
+
+            wp_schedule_event(
+                time() + 300,
+                'hourly',
+                self::HOOK
+            );
+        }
     }
 
+
+    /**
+     * Retrieve the shared scheduler instance.
+     */
+    private static function instance() {
+
+        if (
+            isset( $GLOBALS['bcu_patreon_release_scheduler'] ) &&
+            $GLOBALS['bcu_patreon_release_scheduler'] instanceof self
+        ) {
+            return $GLOBALS['bcu_patreon_release_scheduler'];
+        }
+
+        return null;
+    }
+
+
+    /**
+     * Render the Patreon scheduler administration page.
+     */
     public static function render_page() {
-        if ( ! current_user_can( 'manage_options' ) ) { return; }
-        $stories = get_posts( array( 'post_type'=>'fcn_story', 'post_status'=>array('publish','draft','private','pending'), 'numberposts'=>-1, 'orderby'=>'title', 'order'=>'ASC' ) );
-        $story_id = isset( $_GET['story_id'] ) ? absint( $_GET['story_id'] ) : ( ! empty( $stories ) ? (int) $stories[0]->ID : 0 );
-        if ( $story_id && get_post_type( $story_id ) !== 'fcn_story' ) { $story_id = 0; }
-        $self = new self(); $s = $story_id ? $self->settings( $story_id ) : array();
-        $days = isset( $s['days'] ) ? (array) $s['days'] : array( 1, 3 );
-        $per = isset( $s['per_release'] ) ? absint( $s['per_release'] ) : 1;
-        $time = isset( $s['time'] ) ? $s['time'] : '19:00'; $enabled = ! empty( $s['enabled'] );
+
+        if ( ! current_user_can( 'manage_options' ) ) {
+            return;
+        }
+
+        $self = self::instance();
+
+        if ( ! $self ) {
+            echo '<div class="notice notice-error"><p>The Patreon scheduler has not been initialized.</p></div>';
+            return;
+        }
+
+        $stories = get_posts( array(
+            'post_type'   => 'fcn_story',
+            'post_status' => array(
+                'publish',
+                'draft',
+                'private',
+                'pending',
+            ),
+            'numberposts' => -1,
+            'orderby'     => 'title',
+            'order'       => 'ASC',
+        ) );
+
+        $story_id = isset( $_GET['story_id'] )
+            ? absint( $_GET['story_id'] )
+            : ( ! empty( $stories ) ? (int) $stories[0]->ID : 0 );
+
+        if (
+            $story_id &&
+            get_post_type( $story_id ) !== 'fcn_story'
+        ) {
+            $story_id = 0;
+        }
+
+        $s = $story_id
+            ? $self->settings( $story_id )
+            : array();
+
+        $days = isset( $s['days'] )
+            ? array_map( 'absint', (array) $s['days'] )
+            : array( 1, 3 );
+
+        $per = isset( $s['per_release'] )
+            ? absint( $s['per_release'] )
+            : 1;
+
+        $time = isset( $s['time'] )
+            ? $s['time']
+            : '19:00';
+
+        $enabled = ! empty( $s['enabled'] );
+
         $next = $self->next_release( $s );
-        echo '<div class="wrap"><h1>Patreon Release Scheduler</h1><p>Schedules are independent for each novel. At each selected release time, the oldest Vault-exclusive chapters move to Treasure + Vault, while the oldest Treasure + Vault chapters move to Public at the same time.</p>';
+
+        echo '<div class="wrap">';
+        echo '<h1>Patreon Release Scheduler</h1>';
+
+        echo '<p>Schedules are independent for each novel. At each selected release time, the oldest Vault-exclusive chapters move to Treasure + Vault, while the oldest Treasure + Vault chapters move to Public at the same time.</p>';
+
         echo '<div class="notice notice-warning"><p><strong>WP-Cron note:</strong> WordPress runs scheduled tasks when the site receives visits. Releases can happen later than the selected time on a low-traffic site.</p></div>';
-        if ( empty( $stories ) ) { echo '<p>Create a Fictioneer novel first.</p></div>'; return; }
-        echo '<form method="get" style="margin:16px 0"><input type="hidden" name="page" value="bcu-patreon-scheduler"><label><strong>Novel: </strong><select name="story_id" onchange="this.form.submit()">';
-        foreach ( $stories as $story ) { echo '<option value="'.absint($story->ID).'" '.selected($story_id,$story->ID,false).'>'.esc_html($story->post_title).'</option>'; }
-        echo '</select></label> <button class="button">Open novel schedule</button></form>';
-        if ( ! $story_id ) { echo '</div>'; return; }
-        echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" style="max-width:700px;background:#fff;padding:18px;border:1px solid #ccd0d4"><input type="hidden" name="action" value="bcu_save_patreon_schedule"><input type="hidden" name="story_id" value="'.absint($story_id).'">';
+
+        if ( isset( $_GET['saved'] ) ) {
+            echo '<div class="notice notice-success is-dismissible"><p>Patreon release schedule saved.</p></div>';
+        }
+
+        if ( empty( $stories ) ) {
+
+            echo '<p>Create a Fictioneer novel first.</p>';
+            echo '</div>';
+
+            return;
+        }
+
+        echo '<form method="get" style="margin:16px 0">';
+
+        echo '<input type="hidden" name="page" value="bcu-patreon-scheduler">';
+
+        echo '<label><strong>Novel: </strong><select name="story_id" onchange="this.form.submit()">';
+
+        foreach ( $stories as $story ) {
+
+            echo '<option value="' . absint( $story->ID ) . '" ' .
+                selected( $story_id, $story->ID, false ) .
+                '>' . esc_html( $story->post_title ) . '</option>';
+        }
+
+        echo '</select></label> ';
+
+        echo '<button class="button">Open novel schedule</button>';
+
+        echo '</form>';
+
+        if ( ! $story_id ) {
+
+            echo '</div>';
+
+            return;
+        }
+
+        /*
+         * Schedule settings form.
+         */
+        echo '<form method="post" action="' .
+            esc_url( admin_url( 'admin-post.php' ) ) .
+            '" style="max-width:700px;background:#fff;padding:18px;border:1px solid #ccd0d4">';
+
+        echo '<input type="hidden" name="action" value="bcu_save_patreon_schedule">';
+
+        echo '<input type="hidden" name="story_id" value="' .
+            absint( $story_id ) . '">';
+
         wp_nonce_field( 'bcu_save_patreon_schedule_' . $story_id );
-        echo '<p><label><input type="checkbox" name="enabled" value="1" '.checked($enabled,true,false).'> <strong>Enable automatic Patreon releases for this novel</strong></label></p><p><strong>Release days</strong><br>';
-        $labels=array(1=>'Monday',2=>'Tuesday',3=>'Wednesday',4=>'Thursday',5=>'Friday',6=>'Saturday',7=>'Sunday');
-        foreach($labels as $n=>$label){echo '<label style="display:inline-block;margin:0 12px 8px 0"><input type="checkbox" name="days[]" value="'.$n.'" '.checked(in_array($n,$days,true),true,false).'> '.esc_html($label).'</label>';}
-        echo '</p><p><label>Chapters per tier, per release<br><input type="number" name="per_release" min="1" max="50" value="'.esc_attr(max(1,min(50,$per))).'" style="width:90px"></label></p><p><label>First release date<br><input type="date" name="start_date" value="'.esc_attr($s['start_date']??wp_date('Y-m-d',current_time('timestamp')+DAY_IN_SECONDS)).'"></label></p><p><label>Release time (WordPress site timezone)<br><input type="time" name="time" value="'.esc_attr($time).'"></label></p>';
-        echo '<p><strong>Next release:</strong> '.($next?esc_html($next->format('D, j M Y H:i')):'Not scheduled').'</p><p><button class="button button-primary">Save this novel’s schedule</button></p></form>';
-        echo '<h2>Current queues for this novel</h2><p>Vault exclusive: <strong>'.absint($self->queue_count($story_id,'vault')).'</strong> chapters &nbsp; | &nbsp; Treasure + Vault: <strong>'.absint($self->queue_count($story_id,'treasure')).'</strong> chapters</p><p>Volume grouping is left untouched and remains separate from access level.</p></div>';
+
+        echo '<p><label><input type="checkbox" name="enabled" value="1" ' .
+            checked( $enabled, true, false ) .
+            '> <strong>Enable automatic Patreon releases for this novel</strong></label></p>';
+
+        echo '<p><strong>Release days</strong><br>';
+
+        $labels = array(
+            1 => 'Monday',
+            2 => 'Tuesday',
+            3 => 'Wednesday',
+            4 => 'Thursday',
+            5 => 'Friday',
+            6 => 'Saturday',
+            7 => 'Sunday',
+        );
+
+        foreach ( $labels as $n => $label ) {
+
+            echo '<label style="display:inline-block;margin:0 12px 8px 0">';
+
+            echo '<input type="checkbox" name="days[]" value="' .
+                $n . '" ' .
+                checked( in_array( $n, $days, true ), true, false ) .
+                '> ' . esc_html( $label );
+
+            echo '</label>';
+        }
+
+        echo '</p>';
+
+        echo '<p><label>Chapters per tier, per release<br>';
+
+        echo '<input type="number" name="per_release" min="1" max="50" value="' .
+            esc_attr( max( 1, min( 50, $per ) ) ) .
+            '" style="width:90px"></label></p>';
+
+        echo '<p><label>First release date<br>';
+
+        echo '<input type="date" name="start_date" value="' .
+            esc_attr(
+                $s['start_date'] ??
+                wp_date(
+                    'Y-m-d',
+                    current_time( 'timestamp' ) + DAY_IN_SECONDS
+                )
+            ) .
+            '"></label></p>';
+
+        echo '<p><label>Release time (WordPress site timezone)<br>';
+
+        echo '<input type="time" name="time" value="' .
+            esc_attr( $time ) .
+            '"></label></p>';
+
+        echo '<p><strong>Next release:</strong> ' .
+            (
+                $next
+                    ? esc_html( $next->format( 'D, j M Y H:i' ) )
+                    : 'Not scheduled'
+            ) .
+            '</p>';
+
+        echo '<p><button class="button button-primary">Save this novel’s schedule</button></p>';
+
+        echo '</form>';
+
+        /*
+         * Queue counts.
+         */
+        echo '<h2>Current queues for this novel</h2>';
+
+        echo '<p>Vault exclusive: <strong>' .
+            absint( $self->queue_count( $story_id, 'vault' ) ) .
+            '</strong> chapters &nbsp; | &nbsp; Treasure + Vault: <strong>' .
+            absint( $self->queue_count( $story_id, 'treasure' ) ) .
+            '</strong> chapters</p>';
+
+        echo '<p>Volume grouping is left untouched and remains separate from access level.</p>';
+
+        echo '</div>';
     }
 
-    private function settings( $story_id ) { $s=get_option(self::OPTION_PREFIX.absint($story_id),array()); return is_array($s)?$s:array(); }
 
+    /**
+     * Retrieve a novel's schedule settings.
+     */
+    private function settings( $story_id ) {
+
+        $s = get_option(
+            self::OPTION_PREFIX . absint( $story_id ),
+            array()
+        );
+
+        return is_array( $s ) ? $s : array();
+    }
+
+
+    /**
+     * Validate a calendar date strictly.
+     */
+    private function valid_date( $date ) {
+
+        if ( ! is_string( $date ) || ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $date ) ) {
+            return false;
+        }
+
+        $parsed = DateTimeImmutable::createFromFormat(
+            '!Y-m-d',
+            $date,
+            wp_timezone()
+        );
+
+        $errors = DateTimeImmutable::getLastErrors();
+
+        if ( false === $parsed ) {
+            return false;
+        }
+
+        if (
+            is_array( $errors ) &&
+            ( $errors['warning_count'] > 0 || $errors['error_count'] > 0 )
+        ) {
+            return false;
+        }
+
+        return $parsed->format( 'Y-m-d' ) === $date;
+    }
+
+
+    /**
+     * Save a novel's schedule.
+     */
     public function save() {
-        if ( ! current_user_can( 'manage_options' ) ) { wp_die( 'Permission denied.' ); }
-        $story_id=isset($_POST['story_id'])?absint($_POST['story_id']):0;
-        check_admin_referer( 'bcu_save_patreon_schedule_' . $story_id );
-        if ( get_post_type($story_id)!=='fcn_story' ) { wp_die('Invalid novel.'); }
-        $days=isset($_POST['days'])&&is_array($_POST['days'])?array_map('absint',wp_unslash($_POST['days'])):array();
-        $days=array_values(array_unique(array_intersect($days,array(1,2,3,4,5,6,7)))); sort($days);
-        $time=isset($_POST['time'])?sanitize_text_field(wp_unslash($_POST['time'])):'19:00';
-        if(!preg_match('/^([01]\d|2[0-3]):[0-5]\d$/',$time)){$time='19:00';}
-        $start_date=isset($_POST['start_date'])?sanitize_text_field(wp_unslash($_POST['start_date'])):wp_date('Y-m-d',current_time('timestamp'));
-        if(!preg_match('/^\d{4}-\d{2}-\d{2}$/',$start_date)){$start_date=wp_date('Y-m-d',current_time('timestamp'));}
-        $s=array('enabled'=>!empty($_POST['enabled']),'days'=>$days,'per_release'=>max(1,min(50,absint($_POST['per_release']??1))),'time'=>$time,'start_date'=>$start_date);
-        update_option(self::OPTION_PREFIX.$story_id,$s,false);
-        wp_safe_redirect(add_query_arg(array('page'=>'bcu-patreon-scheduler','story_id'=>$story_id,'saved'=>'1'),admin_url('admin.php'))); exit;
-    }
 
-    private function next_release($s) {
-        if(empty($s['enabled'])||empty($s['days']))return false;
-        $now=current_datetime();$time=$s['time']??'19:00';
-        if(!empty($s['start_date'])&&$s['start_date']>$now->format('Y-m-d')){$start=DateTimeImmutable::createFromFormat('!Y-m-d',$s['start_date'],wp_timezone());if($start)$now=$start;}
-        for($i=0;$i<8;$i++){$d=$now->modify('+'.$i.' days');if(in_array((int)$d->format('N'),(array)$s['days'],true)){$parts=explode(':',$time);$candidate=$d->setTime((int)$parts[0],(int)$parts[1],0);if($candidate>$now)return $candidate;}}
-        return false;
-    }
-
-    public function tick() {
-    		$this->process_pending_notifications(); 
-        if(get_transient('bcu_patreon_release_lock'))return;
-        set_transient('bcu_patreon_release_lock',1,20*MINUTE_IN_SECONDS);
-        $stories=get_posts(array('post_type'=>'fcn_story','post_status'=>array('publish','draft','private'),'numberposts'=>-1,'fields'=>'ids'));
-        foreach($stories as $story_id){
-            $s=$this->settings($story_id);if(empty($s['enabled'])||empty($s['days']))continue;
-            $now=current_datetime();$date=$now->format('Y-m-d');
-            if($now->format('Y-m-d')<($s['start_date']??'1970-01-01')||!in_array((int)$now->format('N'),(array)$s['days'],true)||$now->format('H:i')<($s['time']??'19:00'))continue;
-            $last=get_option('bcu_patreon_last_release_'.$story_id,'');if($last===$date)continue;
-            $limit=max(1,min(50,absint($s['per_release']??1)));
-            // Snapshot both queues before changing either, so promotions happen simultaneously.
-            $vault=$this->queue_ids($story_id,'vault');$treasure=$this->queue_ids($story_id,'treasure');
-            foreach(array_slice($vault,0,$limit) as $id)$this->promote_to_treasure($id);
-            foreach(array_slice($treasure,0,$limit) as $id)$this->promote_to_public($id);
-            update_option('bcu_patreon_last_release_'.$story_id,$date,false);
-        }
-        delete_transient('bcu_patreon_release_lock');
-    }
-
-    private function queue_ids($story_id,$level) {
-        $posts=get_posts(array('post_type'=>'fcn_chapter','post_status'=>'publish','numberposts'=>-1,'fields'=>'ids','meta_query'=>array('relation'=>'AND',array('key'=>'fictioneer_chapter_story','value'=>(string)$story_id),array('key'=>'_bcu_access_level','value'=>$level))));
-        usort($posts,function($a,$b){$ga=(string)get_post_meta($a,'fictioneer_chapter_group',true);$gb=(string)get_post_meta($b,'fictioneer_chapter_group',true);$g=strnatcasecmp($ga,$gb);if($g!==0)return $g;$pa=get_post($a);$pb=get_post($b);$na=$this->chapter_number($pa?$pa->post_title:'',0);$nb=$this->chapter_number($pb?$pb->post_title:'',0);return $na===$nb?$a-$b:$na<=>$nb;});
-        return array_map('absint',$posts);
-    }
-
-    private function chapter_number($title,$fallback=0){$title=html_entity_decode(wp_strip_all_tags((string)$title),ENT_QUOTES,'UTF-8');if(preg_match('/(?:chapter|chap\.?|ch\.?|第)\s*0*(\d+)/iu',$title,$m))return (int)$m[1];if(preg_match('/^\s*0*(\d+)(?:\D|$)/u',$title,$m))return (int)$m[1];return (int)$fallback;}
-
-    private function queue_count($story_id,$level){$q=new WP_Query(array('post_type'=>'fcn_chapter','post_status'=>'publish','posts_per_page'=>1,'fields'=>'ids','meta_query'=>array('relation'=>'AND',array('key'=>'fictioneer_chapter_story','value'=>(string)$story_id),array('key'=>'_bcu_access_level','value'=>$level))));return (int)$q->found_posts;}
-
-    private function promote_to_treasure($id){update_post_meta($id,'_bcu_access_level','treasure');update_post_meta($id,'fictioneer_patreon_lock_tiers',array(self::TREASURE_TIER,self::VAULT_TIER));update_post_meta($id,'fictioneer_chapter_password_note','This is an advance chapter available to Beryll Treasure and Beryll Vault members. Join either tier to read it, or check back when it is released publicly.');}
-
-    private function promote_to_public($id) {
-    // Remove the Patreon gate before announcing the chapter publicly.
-    wp_update_post(array(
-        'ID' => $id,
-        'post_password' => ''
-    ));
-
-    delete_post_meta($id, 'fictioneer_patreon_lock_tiers');
-    delete_post_meta($id, 'fictioneer_patreon_lock_amount');
-    delete_post_meta($id, 'fictioneer_chapter_password_note');
-    delete_post_meta($id, 'fictioneer_expire_post_password');
-    delete_post_meta($id, '_bcu_password_set');
-
-    update_post_meta($id, '_bcu_access_level', 'public');
-
-    // Mark this chapter for its public-release announcement.
-    update_post_meta($id, '_bcu_discord_public_release_pending', 1);
-
-    $this->notify_public_release($id);
-    }
- /**
- * Announce a Patreon chapter only when it becomes public.
- * A database lock prevents simultaneous requests from sending duplicates.
- */
- private function notify_public_release($id) {
-
-    $id = absint($id);
-
-    if (!$id) {
-        return;
-    }
-
-    // Check whether this chapter has already been announced.
-    if (get_post_meta($id, '_bcu_discord_public_release_notified', true)) {
-        delete_post_meta($id, '_bcu_discord_public_release_pending');
-        return;
-    }
-
-    // Acquire an atomic database lock for this chapter.
-    $lock_key = '_bcu_discord_notify_lock_' . $id;
-
-    if (!add_option($lock_key, time(), '', false)) {
-
-        // Recover a lock left behind by a crashed request.
-        $locked_at = (int) get_option($lock_key, 0);
-
-        if (!$locked_at || $locked_at >= time() - 300) {
-            return;
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( 'Permission denied.' );
         }
 
-        global $wpdb;
+        $story_id = isset( $_POST['story_id'] )
+            ? absint( $_POST['story_id'] )
+            : 0;
 
- $deleted = $wpdb->query(
-    $wpdb->prepare(
-        "DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
-        $lock_key,
-        maybe_serialize($locked_at)
-    )
- );
+        check_admin_referer(
+            'bcu_save_patreon_schedule_' . $story_id
+        );
 
- if (!$deleted || !add_option($lock_key, time(), '', false)) {
-    return;
- }
-    }
-
-    try {
-
-        // Check again after acquiring the lock.
-        if (get_post_meta($id, '_bcu_discord_public_release_notified', true)) {
-            delete_post_meta($id, '_bcu_discord_public_release_pending');
-            return;
+        if ( get_post_type( $story_id ) !== 'fcn_story' ) {
+            wp_die( 'Invalid novel.' );
         }
 
-        // Use the existing Fictioneer chapter webhook.
-        $webhook = get_option('fictioneer_discord_channel_chapters_webhook');
-
-        if (empty($webhook)) {
-            return;
-        }
-
-        $post = get_post($id);
-
-        if (!$post || $post->post_type !== 'fcn_chapter' || $post->post_status !== 'publish') {
-            return;
-        }
-
-        $story_id = function_exists('fictioneer_get_chapter_story_id')
-            ? fictioneer_get_chapter_story_id($id)
-            : absint(get_post_meta($id, 'fictioneer_chapter_story', true));
-
-        $title = html_entity_decode(get_the_title($post), ENT_QUOTES, 'UTF-8');
-
-        $story_title = $story_id
-            ? html_entity_decode(get_the_title($story_id), ENT_QUOTES, 'UTF-8')
-            : '';
-
-        $story_url = $story_id ? get_permalink($story_id) : '';
-
-        $content = $story_title && $story_url
-            ? sprintf(
-                'A new chapter is now free to read for [%s](%s)!',
-                $story_title,
-                $story_url
+        $days = isset( $_POST['days'] ) && is_array( $_POST['days'] )
+            ? array_map(
+                'absint',
+                wp_unslash( $_POST['days'] )
             )
-            : 'A new chapter is now available to read for free!';
+            : array();
 
-        $message = array(
-            'content' => $content,
-            'embeds' => array(
-                array(
-                    'title' => $title,
-                    'url' => get_permalink($id),
-                    'color' => defined('FICTIONEER_DISCORD_EMBED_COLOR')
-                        ? FICTIONEER_DISCORD_EMBED_COLOR
-                        : 9692513,
-                    'author' => array(
-                        'name' => get_the_author_meta('display_name', $post->post_author),
-                        'icon_url' => get_avatar_url($post->post_author)
-                    ),
-                    'timestamp' => get_date_from_gmt($post->post_date_gmt, 'c')
+        $days = array_values(
+            array_unique(
+                array_intersect(
+                    $days,
+                    array( 1, 2, 3, 4, 5, 6, 7 )
                 )
             )
         );
 
-        $thumbnail_url = get_the_post_thumbnail_url($id, 'thumbnail');
+        sort( $days );
 
-        if (empty($thumbnail_url) && $story_id) {
-            $thumbnail_url = get_the_post_thumbnail_url($story_id, 'thumbnail');
+        $time = isset( $_POST['time'] )
+            ? sanitize_text_field( wp_unslash( $_POST['time'] ) )
+            : '19:00';
+
+        if ( ! preg_match( '/^([01]\d|2[0-3]):[0-5]\d$/', $time ) ) {
+            $time = '19:00';
         }
 
-        if (!empty($thumbnail_url)) {
-            $message['embeds'][0]['thumbnail'] = array(
-                'url' => $thumbnail_url
-            );
+        $start_date = isset( $_POST['start_date'] )
+            ? sanitize_text_field( wp_unslash( $_POST['start_date'] ) )
+            : wp_date( 'Y-m-d', current_time( 'timestamp' ) );
+
+        if ( ! $this->valid_date( $start_date ) ) {
+            $start_date = wp_date( 'Y-m-d', current_time( 'timestamp' ) );
         }
 
-        $message = apply_filters(
-            'fictioneer_filter_discord_chapter_message',
-            $message,
-            $post,
-            $story_id
+        $s = array(
+            'enabled'      => ! empty( $_POST['enabled'] ),
+            'days'         => $days,
+            'per_release'  => max(
+                1,
+                min( 50, absint( $_POST['per_release'] ?? 1 ) )
+            ),
+            'time'         => $time,
+            'start_date'   => $start_date,
         );
 
-        $webhook = apply_filters(
-            'fictioneer_filter_discord_chapter_webhook',
-            $webhook,
-            $post,
-            $story_id
+        update_option(
+            self::OPTION_PREFIX . $story_id,
+            $s,
+            false
         );
 
-        if (empty($webhook)) {
-            return;
-        }
-
-        $response = wp_remote_post(
-            $webhook,
-            array(
-                'timeout'     => 15,
-                'redirection' => 0,
-                'blocking'    => true,
-                'headers'     => array(
-                    'Content-Type' => 'application/json',
+        wp_safe_redirect(
+            add_query_arg(
+                array(
+                    'page'     => 'bcu-patreon-scheduler',
+                    'story_id' => $story_id,
+                    'saved'    => '1',
                 ),
-                'body' => wp_json_encode($message),
+                admin_url( 'admin.php' )
             )
         );
 
-        if (!is_wp_error($response)) {
+        exit;
+    }
 
-            $status_code = wp_remote_retrieve_response_code($response);
 
-            if ($status_code >= 200 && $status_code < 300) {
+    /**
+     * Calculate the next scheduled release.
+     */
+    private function next_release( $s ) {
 
-                update_post_meta(
-                    $id,
-                    '_bcu_discord_public_release_notified',
-                    current_time('mysql')
-                );
+        if ( empty( $s['enabled'] ) || empty( $s['days'] ) ) {
+            return false;
+        }
 
-                delete_post_meta($id, '_bcu_discord_public_release_pending');
+        $now = current_datetime();
+
+        $time = $s['time'] ?? '19:00';
+
+        if (
+            ! preg_match( '/^([01]\d|2[0-3]):[0-5]\d$/', $time )
+        ) {
+            $time = '19:00';
+        }
+
+        if (
+            ! empty( $s['start_date'] ) &&
+            $this->valid_date( $s['start_date'] ) &&
+            $s['start_date'] > $now->format( 'Y-m-d' )
+        ) {
+
+            $start = DateTimeImmutable::createFromFormat(
+                '!Y-m-d',
+                $s['start_date'],
+                wp_timezone()
+            );
+
+            if ( $start ) {
+                $now = $start;
             }
         }
 
-    } finally {
+        for ( $i = 0; $i < 8; $i++ ) {
 
-        // Always release the lock, including when an early return occurs.
-        delete_option($lock_key);
+            $d = $now->modify( '+' . $i . ' days' );
+
+            if (
+                in_array(
+                    (int) $d->format( 'N' ),
+                    array_map( 'absint', (array) $s['days'] ),
+                    true
+                )
+            ) {
+
+                $parts = explode( ':', $time );
+
+                $candidate = $d->setTime(
+                    (int) $parts[0],
+                    (int) $parts[1],
+                    0
+                );
+
+                if ( $candidate > $now ) {
+                    return $candidate;
+                }
+            }
+        }
+
+        return false;
     }
- }
 
 
- /**
- * Retry announcements that failed previously.
- */
- private function process_pending_notifications() {
+    /**
+     * Acquire an atomic database lock.
+     */
+    private function acquire_lock( $key, $ttl ) {
 
-    $pending = get_posts(array(
-        'post_type' => 'fcn_chapter',
-        'post_status' => 'publish',
-        'numberposts' => 50,
-        'fields' => 'ids',
-        'meta_query' => array(
-            array(
-                'key' => '_bcu_discord_public_release_pending',
-                'value' => '1'
+        $token = wp_generate_uuid4() . '|' . time();
+
+        if ( add_option( $key, $token, '', false ) ) {
+            return $token;
+        }
+
+        $existing = get_option( $key, '' );
+
+        $parts = explode( '|', (string) $existing );
+
+        $locked_at = isset( $parts[1] )
+            ? absint( $parts[1] )
+            : 0;
+
+        if ( ! $locked_at || $locked_at >= time() - $ttl ) {
+            return false;
+        }
+
+        global $wpdb;
+
+        $deleted = $wpdb->query(
+            $wpdb->prepare(
+                "DELETE FROM {$wpdb->options}
+                WHERE option_name = %s
+                AND option_value = %s",
+                $key,
+                maybe_serialize( $existing )
             )
-        )
-    ));
+        );
 
-    foreach ($pending as $id) {
-        $this->notify_public_release($id);
+        if ( ! $deleted ) {
+            return false;
+        }
+
+        if ( add_option( $key, $token, '', false ) ) {
+            return $token;
+        }
+
+        return false;
     }
- }
+
+
+    /**
+     * Release a lock only if this request owns it.
+     */
+    private function release_lock( $key, $token ) {
+
+        global $wpdb;
+
+        $wpdb->query(
+            $wpdb->prepare(
+                "DELETE FROM {$wpdb->options}
+                WHERE option_name = %s
+                AND option_value = %s",
+                $key,
+                maybe_serialize( $token )
+            )
+        );
+
+        wp_cache_delete( $key, 'options' );
+    }
+
+
+    /**
+     * Run scheduled Patreon promotions.
+     */
+    public function tick() {
+
+        /*
+         * Retry previously failed public notifications.
+         */
+        $this->process_pending_notifications();
+
+        /*
+         * Prevent overlapping scheduler executions.
+         */
+        $lock_key = 'bcu_patreon_release_lock';
+
+        $lock_token = $this->acquire_lock(
+            $lock_key,
+            self::LOCK_TTL
+        );
+
+        if ( ! $lock_token ) {
+            return;
+        }
+
+        try {
+
+            $stories = get_posts( array(
+                'post_type'   => 'fcn_story',
+                'post_status' => array(
+                    'publish',
+                    'draft',
+                    'private',
+                ),
+                'numberposts' => -1,
+                'fields'      => 'ids',
+            ) );
+
+            foreach ( $stories as $story_id ) {
+
+                $s = $this->settings( $story_id );
+
+                if (
+                    empty( $s['enabled'] ) ||
+                    empty( $s['days'] )
+                ) {
+                    continue;
+                }
+
+                $now = current_datetime();
+
+                $date = $now->format( 'Y-m-d' );
+
+                if (
+                    $date < ( $s['start_date'] ?? '1970-01-01' )
+                ) {
+                    continue;
+                }
+
+                if (
+                    ! in_array(
+                        (int) $now->format( 'N' ),
+                        array_map( 'absint', (array) $s['days'] ),
+                        true
+                    )
+                ) {
+                    continue;
+                }
+
+                if (
+                    $now->format( 'H:i' ) <
+                    ( $s['time'] ?? '19:00' )
+                ) {
+                    continue;
+                }
+
+                $last = get_option(
+                    'bcu_patreon_last_release_' . $story_id,
+                    ''
+                );
+
+                if ( $last === $date ) {
+                    continue;
+                }
+
+                $limit = max(
+                    1,
+                    min( 50, absint( $s['per_release'] ?? 1 ) )
+                );
+
+                /*
+                 * Snapshot both queues before changing either.
+                 *
+                 * This ensures Vault → Treasure and
+                 * Treasure → Public happen simultaneously.
+                 */
+                $vault = $this->queue_ids(
+                    $story_id,
+                    'vault'
+                );
+
+                $treasure = $this->queue_ids(
+                    $story_id,
+                    'treasure'
+                );
+
+                /*
+                 * Vault-exclusive chapters become
+                 * Treasure + Vault.
+                 */
+                foreach ( array_slice( $vault, 0, $limit ) as $id ) {
+
+                    $this->promote_to_treasure( $id );
+                }
+
+                /*
+                 * Treasure + Vault chapters become public.
+                 */
+                foreach ( array_slice( $treasure, 0, $limit ) as $id ) {
+
+                    $this->promote_to_public( $id );
+                }
+
+                update_option(
+                    'bcu_patreon_last_release_' . $story_id,
+                    $date,
+                    false
+                );
+            }
+
+        } finally {
+
+            $this->release_lock(
+                $lock_key,
+                $lock_token
+            );
+        }
+    }
+
+
+    /**
+     * Retrieve chapters in a queue in reading order.
+     */
+    private function queue_ids( $story_id, $level ) {
+
+        $posts = get_posts( array(
+            'post_type'   => 'fcn_chapter',
+            'post_status' => 'publish',
+            'numberposts' => -1,
+            'fields'      => 'ids',
+            'meta_query'  => array(
+                'relation' => 'AND',
+
+                array(
+                    'key'   => 'fictioneer_chapter_story',
+                    'value' => (string) $story_id,
+                ),
+
+                array(
+                    'key'   => '_bcu_access_level',
+                    'value' => $level,
+                ),
+            ),
+        ) );
+
+        usort(
+            $posts,
+            function( $a, $b ) {
+
+                $ga = (string) get_post_meta(
+                    $a,
+                    'fictioneer_chapter_group',
+                    true
+                );
+
+                $gb = (string) get_post_meta(
+                    $b,
+                    'fictioneer_chapter_group',
+                    true
+                );
+
+                $g = strnatcasecmp( $ga, $gb );
+
+                if ( 0 !== $g ) {
+                    return $g;
+                }
+
+                $pa = get_post( $a );
+                $pb = get_post( $b );
+
+                $na = $this->chapter_number(
+                    $pa ? $pa->post_title : '',
+                    0
+                );
+
+                $nb = $this->chapter_number(
+                    $pb ? $pb->post_title : '',
+                    0
+                );
+
+                return $na === $nb
+                    ? $a - $b
+                    : $na <=> $nb;
+            }
+        );
+
+        return array_map( 'absint', $posts );
+    }
+
+
+    /**
+     * Extract a chapter number from a title.
+     */
+    private function chapter_number( $title, $fallback = 0 ) {
+
+        $title = html_entity_decode(
+            wp_strip_all_tags( (string) $title ),
+            ENT_QUOTES,
+            'UTF-8'
+        );
+
+        if (
+            preg_match(
+                '/(?:chapter|chap\.?|ch\.?|第)\s*0*(\d+)/iu',
+                $title,
+                $m
+            )
+        ) {
+            return (int) $m[1];
+        }
+
+        if (
+            preg_match(
+                '/^\s*0*(\d+)(?:\D|$)/u',
+                $title,
+                $m
+            )
+        ) {
+            return (int) $m[1];
+        }
+
+        return (int) $fallback;
+    }
+
+
+    /**
+     * Count chapters in a particular queue.
+     */
+    private function queue_count( $story_id, $level ) {
+
+        $q = new WP_Query( array(
+            'post_type'      => 'fcn_chapter',
+            'post_status'    => 'publish',
+            'posts_per_page' => 1,
+            'fields'         => 'ids',
+            'meta_query'     => array(
+                'relation' => 'AND',
+
+                array(
+                    'key'   => 'fictioneer_chapter_story',
+                    'value' => (string) $story_id,
+                ),
+
+                array(
+                    'key'   => '_bcu_access_level',
+                    'value' => $level,
+                ),
+            ),
+        ) );
+
+        return (int) $q->found_posts;
+    }
+
+
+    /**
+     * Promote a Vault chapter to Treasure + Vault.
+     */
+    private function promote_to_treasure( $id ) {
+
+        /*
+         * Ensure the chapter uses its own access settings
+         * rather than inheriting the parent story's settings.
+         */
+        update_post_meta(
+            $id,
+            'fictioneer_patreon_override',
+            '1'
+        );
+
+        update_post_meta(
+            $id,
+            '_bcu_access_level',
+            'treasure'
+        );
+
+        update_post_meta(
+            $id,
+            'fictioneer_patreon_lock_tiers',
+            array(
+                self::TREASURE_TIER,
+                self::VAULT_TIER,
+            )
+        );
+
+        update_post_meta(
+            $id,
+            'fictioneer_chapter_password_note',
+            'This is an advance chapter available to Beryll Treasure and Beryll Vault members. Join either tier to read it, or check back when it is released publicly.'
+        );
+    }
+
+
+    /**
+     * Promote a Treasure + Vault chapter to Public.
+     */
+    private function promote_to_public( $id ) {
+
+        /*
+         * Remove the Patreon gate before announcing the chapter.
+         */
+        wp_update_post( array(
+            'ID'            => $id,
+            'post_password' => '',
+        ) );
+
+        /*
+         * Keep chapter-level access independent of the novel.
+         */
+        update_post_meta(
+            $id,
+            'fictioneer_patreon_override',
+            '1'
+        );
+
+        delete_post_meta(
+            $id,
+            'fictioneer_patreon_lock_tiers'
+        );
+
+        delete_post_meta(
+            $id,
+            'fictioneer_patreon_lock_amount'
+        );
+
+        delete_post_meta(
+            $id,
+            'fictioneer_chapter_password_note'
+        );
+
+        /*
+         * Correct Fictioneer password-expiration metadata key.
+         */
+        delete_post_meta(
+            $id,
+            'fictioneer_post_password_expiration_date'
+        );
+
+        delete_post_meta(
+            $id,
+            '_bcu_password_set'
+        );
+
+        /*
+         * Mark chapter as public.
+         */
+        update_post_meta(
+            $id,
+            '_bcu_access_level',
+            'public'
+        );
+
+        /*
+         * Queue its public-release announcement.
+         */
+        update_post_meta(
+            $id,
+            '_bcu_discord_public_release_pending',
+            '1'
+        );
+
+        /*
+         * Attempt notification immediately.
+         * If it fails, the pending flag remains for retry.
+         */
+        $this->notify_public_release( $id );
+    }
+
+
+    /**
+     * Send a public-release notification through GitHub Actions.
+     *
+     * This does not contact Discord directly.
+     */
+    private function notify_public_release( $id ) {
+
+        $id = absint( $id );
+
+        if ( ! $id ) {
+            return;
+        }
+
+        /*
+         * Already announced?
+         */
+        if (
+            get_post_meta(
+                $id,
+                '_bcu_discord_public_release_notified',
+                true
+            )
+        ) {
+
+            delete_post_meta(
+                $id,
+                '_bcu_discord_public_release_pending'
+            );
+
+            return;
+        }
+
+        /*
+         * Verify that the chapter is actually public.
+         */
+        $post = get_post( $id );
+
+        if (
+            ! $post ||
+            $post->post_type !== 'fcn_chapter' ||
+            $post->post_status !== 'publish' ||
+            ! empty( $post->post_password )
+        ) {
+            return;
+        }
+
+        /*
+         * Ensure it is not still in a Patreon queue.
+         */
+        $access_level = get_post_meta(
+            $id,
+            '_bcu_access_level',
+            true
+        );
+
+        if ( 'public' !== $access_level ) {
+            return;
+        }
+
+        /*
+         * Acquire a per-chapter notification lock.
+         */
+        $lock_key = '_bcu_discord_notify_lock_' . $id;
+
+        $lock_token = $this->acquire_lock(
+            $lock_key,
+            5 * MINUTE_IN_SECONDS
+        );
+
+        if ( ! $lock_token ) {
+            return;
+        }
+
+        try {
+
+            /*
+             * Check again after acquiring the lock.
+             */
+            if (
+                get_post_meta(
+                    $id,
+                    '_bcu_discord_public_release_notified',
+                    true
+                )
+            ) {
+
+                delete_post_meta(
+                    $id,
+                    '_bcu_discord_public_release_pending'
+                );
+
+                return;
+            }
+
+            /*
+             * GitHub relay configuration.
+             */
+            $token = get_option(
+                'bcu_github_token',
+                ''
+            );
+
+            $username = get_option(
+                'bcu_github_username',
+                'beryll175'
+            );
+
+            $repo = get_option(
+                'bcu_github_repo',
+                'beryll-chapter-uploader'
+            );
+
+            $workflow = get_option(
+                'bcu_github_workflow',
+                'discord-notify.yml'
+            );
+
+            /*
+             * If GitHub is not configured, leave the
+             * notification pending for a later retry.
+             */
+            if (
+                empty( $token ) ||
+                empty( $username ) ||
+                empty( $repo ) ||
+                empty( $workflow )
+            ) {
+                return;
+            }
+
+            /*
+             * Retrieve novel information.
+             */
+            $story_id = function_exists( 'fictioneer_get_chapter_story_id' )
+                ? absint( fictioneer_get_chapter_story_id( $id ) )
+                : absint(
+                    get_post_meta(
+                        $id,
+                        'fictioneer_chapter_story',
+                        true
+                    )
+                );
+
+            $title = html_entity_decode(
+                get_the_title( $id ),
+                ENT_QUOTES,
+                'UTF-8'
+            );
+
+            $story_title = $story_id
+                ? html_entity_decode(
+                    get_the_title( $story_id ),
+                    ENT_QUOTES,
+                    'UTF-8'
+                )
+                : 'Beryll TL';
+
+            $chapter_url = get_permalink( $id );
+
+            $author = get_the_author_meta(
+                'display_name',
+                $post->post_author
+            );
+
+            if ( empty( $author ) ) {
+                $author = 'Beryll TL';
+            }
+
+            /*
+             * Retrieve the chapter or novel cover.
+             */
+            $image_url = get_the_post_thumbnail_url(
+                $id,
+                'thumbnail'
+            );
+
+            if ( empty( $image_url ) && $story_id ) {
+                $image_url = get_the_post_thumbnail_url(
+                    $story_id,
+                    'thumbnail'
+                );
+            }
+
+            /*
+             * Build the GitHub Actions dispatch.
+             *
+             * These input names must match discord-notify.yml.
+             */
+            $body = array(
+                'ref' => 'main',
+
+                'inputs' => array(
+                    'type'        => 'chapter',
+                    'title'       => $title,
+                    'url'         => $chapter_url,
+                    'story'       => $story_title,
+                    'author'      => $author,
+                    'description' => 'A new chapter is now available to read for free!',
+                    'image_url'   => $image_url ? $image_url : '',
+                ),
+            );
+
+            $dispatch_url = sprintf(
+                'https://api.github.com/repos/%s/%s/actions/workflows/%s/dispatches',
+                rawurlencode( $username ),
+                rawurlencode( $repo ),
+                rawurlencode( $workflow )
+            );
+
+            /*
+             * Send request to GitHub Actions.
+             */
+            $response = wp_remote_post(
+                $dispatch_url,
+                array(
+                    'timeout'     => 20,
+                    'redirection' => 0,
+                    'blocking'    => true,
+
+                    'headers' => array(
+                        'Accept'               => 'application/vnd.github+json',
+                        'Authorization'        => 'Bearer ' . $token,
+                        'X-GitHub-Api-Version' => '2022-11-28',
+                        'User-Agent'           => 'Beryll-TL-WordPress-Relay',
+                        'Content-Type'         => 'application/json',
+                    ),
+
+                    'body' => wp_json_encode( $body ),
+                )
+            );
+
+            /*
+             * A successful workflow dispatch returns HTTP 204.
+             */
+            if ( is_wp_error( $response ) ) {
+                return;
+            }
+
+            $status_code = wp_remote_retrieve_response_code(
+                $response
+            );
+
+            if ( 204 !== $status_code ) {
+                return;
+            }
+
+            /*
+             * Mark notification as sent only after GitHub
+             * confirms that it accepted the workflow dispatch.
+             */
+            update_post_meta(
+                $id,
+                '_bcu_discord_public_release_notified',
+                current_time( 'mysql' )
+            );
+
+            delete_post_meta(
+                $id,
+                '_bcu_discord_public_release_pending'
+            );
+
+        } finally {
+
+            $this->release_lock(
+                $lock_key,
+                $lock_token
+            );
+        }
+    }
+
+
+    /**
+     * Retry previously failed public-release notifications.
+     */
+    private function process_pending_notifications() {
+
+        $pending = get_posts( array(
+            'post_type'   => 'fcn_chapter',
+            'post_status' => 'publish',
+            'numberposts' => 50,
+            'fields'      => 'ids',
+
+            'meta_query' => array(
+                array(
+                    'key'   => '_bcu_discord_public_release_pending',
+                    'value' => '1',
+                ),
+            ),
+        ) );
+
+        foreach ( $pending as $id ) {
+
+            $this->notify_public_release( $id );
+        }
+    }
+
 }
-new Beryll_Patreon_Release_Scheduler();
+
+
+/*
+ * Initialize one shared scheduler instance.
+ */
+$GLOBALS['bcu_patreon_release_scheduler'] =
+    new Beryll_Patreon_Release_Scheduler();
 
 /**
  * Lightweight GitHub-based updater for Beryll Chapter Uploader.
