@@ -1,0 +1,152 @@
+name: Beryll TL Discord Notifications
+
+on:
+  workflow_dispatch:
+    inputs:
+      type:
+        description: "Notification type"
+        required: true
+        type: choice
+        options:
+          - chapter
+          - story
+
+      title:
+        description: "Chapter or novel title"
+        required: true
+        type: string
+
+      url:
+        description: "Link to the chapter or novel"
+        required: true
+        type: string
+
+      story:
+        description: "Parent novel title (chapters only)"
+        required: false
+        type: string
+
+      author:
+        description: "Author name"
+        required: false
+        type: string
+
+      description:
+        description: "Optional description"
+        required: false
+        type: string
+
+      image_url:
+        description: "Optional cover image URL"
+        required: false
+        type: string
+
+jobs:
+  send-notification:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Discord notification
+        env:
+          TYPE: ${{ inputs.type }}
+          TITLE: ${{ inputs.title }}
+          URL: ${{ inputs.url }}
+          STORY: ${{ inputs.story }}
+          AUTHOR: ${{ inputs.author }}
+          DESCRIPTION: ${{ inputs.description }}
+          IMAGE_URL: ${{ inputs.image_url }}
+          CHAPTER_WEBHOOK: ${{ secrets.DISCORD_CHAPTER_WEBHOOK }}
+          STORY_WEBHOOK: ${{ secrets.DISCORD_STORY_WEBHOOK }}
+
+        run: |
+          set -euo pipefail
+
+          if [ "$TYPE" = "chapter" ]; then
+            WEBHOOK="$CHAPTER_WEBHOOK"
+            LABEL="New Chapter"
+          elif [ "$TYPE" = "story" ]; then
+            WEBHOOK="$STORY_WEBHOOK"
+            LABEL="New Novel"
+          else
+            echo "Invalid notification type."
+            exit 1
+          fi
+
+          if [ -z "$WEBHOOK" ]; then
+            echo "Discord webhook secret is missing."
+            exit 1
+          fi
+
+          EMBED=$(jq -n \
+            --arg title "$TITLE" \
+            --arg url "$URL" \
+            --arg story "$STORY" \
+            --arg author "$AUTHOR" \
+            --arg description "$DESCRIPTION" \
+            --arg image "$IMAGE_URL" \
+            --arg label "$LABEL" \
+            '{
+              title: $title,
+              url: $url,
+              description: (
+                if $description != "" then $description
+                elif $story != "" then "From: **" + $story + "**"
+                else ""
+                end
+              ),
+              color: 16753920,
+              fields: (
+                [
+                  (if $story != "" and $label == "New Chapter"
+                    then {name: "Novel", value: $story, inline: true}
+                    else empty
+                    end),
+                  (if $author != ""
+                    then {name: "Author", value: $author, inline: true}
+                    else empty
+                    end)
+                ]
+              ),
+              footer: {text: "Beryll TL"},
+              timestamp: (now | todate)
+            }
+            + if $image != "" then {thumbnail: {url: $image}} else {} end
+            + {fields: (
+                [
+                  (if $story != "" and $label == "New Chapter"
+                    then {name: "Novel", value: $story, inline: true}
+                    else empty
+                    end),
+                  (if $author != ""
+                    then {name: "Author", value: $author, inline: true}
+                    else empty
+                    end)
+                ]
+              )}
+            ')
+
+          PAYLOAD=$(jq -n \
+            --arg label "$LABEL" \
+            --argjson embed "$EMBED" \
+            '{
+              username: "Beryll TL",
+              content: ("**" + $label + "!**"),
+              embeds: [$embed],
+              allowed_mentions: {parse: []}
+            }')
+
+          RESPONSE=$(curl --silent --show-error \
+            --output /tmp/discord-response.txt \
+            --write-out "%{http_code}" \
+            --request POST \
+            --header "Content-Type: application/json" \
+            --data "$PAYLOAD" \
+            "$WEBHOOK")
+
+          if [ "$RESPONSE" = "204" ] || [ "$RESPONSE" = "200" ]; then
+            echo "Discord notification sent successfully."
+          else
+            echo "Discord rejected the notification. HTTP: $RESPONSE"
+            cat /tmp/discord-response.txt
+            exit 1
+          fi
