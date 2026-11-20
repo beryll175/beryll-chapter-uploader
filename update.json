@@ -1,5 +1,5 @@
 {
-  "version": "2.5.1",
+  "version": "2.5.2",
   "package": "https://github.com/beryll175/beryll-chapter-uploader/archive/refs/heads/main.zip",
   "requires": "6.0",
   "requires_php": "7.4",
