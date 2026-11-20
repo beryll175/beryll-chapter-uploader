@@ -41,6 +41,24 @@ on:
         required: false
         type: string
 
+       release_mode:
+        description: "Chapter release type"
+        required: false
+        type: choice
+        options:
+          - free
+          - early_access
+
+      chapters:
+        description: "Chapter links for this release"
+        required: false
+        type: string
+
+      free_date:
+        description: "Date and time chapters become free"
+        required: false
+        type: string
+
 jobs:
   send-notification:
     runs-on: ubuntu-latest
@@ -55,6 +73,9 @@ jobs:
           AUTHOR: ${{ inputs.author }}
           DESCRIPTION: ${{ inputs.description }}
           IMAGE_URL: ${{ inputs.image_url }}
+          RELEASE_MODE: ${{ inputs.release_mode }}
+          CHAPTERS: ${{ inputs.chapters }}
+          FREE_DATE: ${{ inputs.free_date }}
           CHAPTER_WEBHOOK: ${{ secrets.DISCORD_CHAPTER_WEBHOOK }}
           STORY_WEBHOOK: ${{ secrets.DISCORD_STORY_WEBHOOK }}
 
