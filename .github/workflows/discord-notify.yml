@@ -98,63 +98,90 @@ jobs:
             exit 1
           fi
 
-          EMBED=$(jq -n \
-            --arg title "$TITLE" \
-            --arg url "$URL" \
-            --arg story "$STORY" \
-            --arg author "$AUTHOR" \
-            --arg description "$DESCRIPTION" \
-            --arg image "$IMAGE_URL" \
-            --arg label "$LABEL" \
-            '{
-              title: $title,
-              url: $url,
-              description: (
-                if $description != "" then $description
-                elif $story != "" then "From: **" + $story + "**"
-                else ""
-                end
-              ),
-              color: 16753920,
-              fields: (
-                [
-                  (if $story != "" and $label == "New Chapter"
-                    then {name: "Novel", value: $story, inline: true}
-                    else empty
-                    end),
-                  (if $author != ""
-                    then {name: "Author", value: $author, inline: true}
-                    else empty
-                    end)
-                ]
-              ),
-              footer: {text: "Beryll TL"},
-              timestamp: (now | todate)
-            }
-            + if $image != "" then {thumbnail: {url: $image}} else {} end
-            + {fields: (
-                [
-                  (if $story != "" and $label == "New Chapter"
-                    then {name: "Novel", value: $story, inline: true}
-                    else empty
-                    end),
-                  (if $author != ""
-                    then {name: "Author", value: $author, inline: true}
-                    else empty
-                    end)
-                ]
-              )}
-            ')
+          if [ "$TYPE" = "chapter" ] && [ -n "$RELEASE_MODE" ]; then
+            CHAPTER_COUNT=$(printf '%s\n' "$CHAPTERS" | awk 'NF {n++} END {print n+0}')
 
-          PAYLOAD=$(jq -n \
-            --arg label "$LABEL" \
-            --argjson embed "$EMBED" \
-            '{
-              username: "Beryll TL",
-              content: ("**" + $label + "!**"),
-              embeds: [$embed],
-              allowed_mentions: {parse: []}
-            }')
+            if [ "$RELEASE_MODE" = "free" ]; then
+              COLOR=5763719
+              HEADING="$STORY: $CHAPTER_COUNT chapters are free to read!"
+              EMBED_DESCRIPTION="$CHAPTERS"
+            else
+              COLOR=16753920
+              HEADING="$STORY: $CHAPTER_COUNT new chapters are out in early access!"
+              EMBED_DESCRIPTION="$CHAPTERS
+
+          Early access for Patreon supporters. Free on $FREE_DATE."
+            fi
+
+            EMBED=$(jq -n \
+              --arg title "$STORY" \
+              --arg url "$URL" \
+              --arg description "$EMBED_DESCRIPTION" \
+              --arg image "$IMAGE_URL" \
+              --argjson color "$COLOR" \
+              '{
+                title: $title,
+                url: $url,
+                description: $description,
+                color: $color,
+                footer: {text: "Beryll TL"},
+                timestamp: (now | todate)
+              }
+              + if $image != "" then {thumbnail: {url: $image}} else {} end')
+
+            PAYLOAD=$(jq -n \
+              --arg heading "$HEADING" \
+              --argjson embed "$EMBED" \
+              '{
+                username: "Beryll TL",
+                content: $heading,
+                embeds: [$embed],
+                allowed_mentions: {parse: []}
+              }')
+          else
+            EMBED=$(jq -n \
+              --arg title "$TITLE" \
+              --arg url "$URL" \
+              --arg story "$STORY" \
+              --arg author "$AUTHOR" \
+              --arg description "$DESCRIPTION" \
+              --arg image "$IMAGE_URL" \
+              --arg label "$LABEL" \
+              '{
+                title: $title,
+                url: $url,
+                description: (
+                  if $description != "" then $description
+                  elif $story != "" then "From: **" + $story + "**"
+                  else ""
+                  end
+                ),
+                color: 16753920,
+                fields: [
+                  (if $story != "" and $label == "New Chapter"
+                    then {name: "Novel", value: $story, inline: true}
+                    else empty
+                    end),
+                  (if $author != ""
+                    then {name: "Author", value: $author, inline: true}
+                    else empty
+                    end)
+                ],
+                footer: {text: "Beryll TL"},
+                timestamp: (now | todate)
+              }
+              + if $image != "" then {thumbnail: {url: $image}} else {} end')
+
+            PAYLOAD=$(jq -n \
+              --arg label "$LABEL" \
+              --argjson embed "$EMBED" \
+              '{
+                username: "Beryll TL",
+                content: ("**" + $label + "!**"),
+                embeds: [$embed],
+                allowed_mentions: {parse: []}
+              }')
+          fi
 
           RESPONSE=$(curl --silent --show-error \
             --output /tmp/discord-response.txt \
