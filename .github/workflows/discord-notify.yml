@@ -41,7 +41,7 @@ on:
         required: false
         type: string
 
-       release_mode:
+      release_mode:
         description: "Chapter release type"
         required: false
         type: choice
